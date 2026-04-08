@@ -2,19 +2,30 @@
 
 Predict atmospheric optical phenomena such as halos, sundogs, circumzenithal arcs, and rainbows from live weather inputs.
 
-The project supports two weather modes:
+The current implementation combines:
 
-- `forecast`: NOAA GFS forecast data
-- `observed`: GOES cloud-layer products plus nearby METAR observations, with GFS fallback if satellite data is unavailable
+- weather ingestion from forecast and observed sources
+- solar position calculation
+- normalized feature engineering
+- smooth quantitative probability models
+- CLI and HTTP API entry points
 
-Predictions are returned as smooth probabilities between `0.000` and `1.000`, rounded to 3 decimal places, with source attribution and source timestamps.
+Predictions are returned as probabilities between `0.000` and `1.000`, rounded to 3 decimal places, with source attribution and source timestamps in UTC.
 
-## What It Predicts
+## Supported Phenomena
 
 - `halo`
 - `parhelia`
 - `cza`
 - `rainbow`
+
+## Weather Modes
+
+- `forecast`
+  Uses NOAA GFS forecast data.
+- `observed`
+  Uses GOES cloud-layer products plus nearby METAR observations.
+  If GOES is unavailable, the pipeline falls back to GFS for the missing upper-air and high-cloud inputs.
 
 ## Project Layout
 
@@ -24,45 +35,76 @@ data_ingestion -> feature_engineering -> models -> core -> cli/api
 
 Key modules:
 
-- `data_ingestion/weather.py`: GFS, GOES, and METAR ingestion
-- `feature_engineering/features.py`: normalized model features
+- `data_ingestion/weather.py`: GFS, GOES, METAR, and source attribution
+- `feature_engineering/features.py`: normalized model inputs
 - `models/`: quantitative probability models
-- `core/predictor.py`: end-to-end orchestration
+- `core/predictor.py`: end-to-end orchestration and output shaping
 - `cli/main.py`: command-line interface
 - `api/main.py`: HTTP API
 
-## Dependencies
+## Requirements
 
-Base Python packages:
+Python:
 
-```bash
-python3 -m pip install requests pytest
-```
+- Python 3.10+
 
-Optional Python packages:
-
-- `numpy`, `netCDF4`, `pyproj`: required for GOES-based observed mode
-- `fastapi`, `uvicorn`: optional for an ASGI API server
-
-Example:
+Core runtime package:
 
 ```bash
-python3 -m pip install requests pytest numpy netCDF4 pyproj fastapi uvicorn
+python3 -m pip install requests
 ```
 
-External binary:
+Forecast mode requirement:
 
-- `wgrib2` is required for GFS GRIB2 parsing in forecast mode
+- `wgrib2` is required to parse NOAA GFS GRIB2 data
+
+Observed mode extras for full GOES support:
+
+```bash
+python3 -m pip install numpy netCDF4 pyproj
+```
+
+API extras:
+
+```bash
+python3 -m pip install fastapi uvicorn
+```
+
+Test dependency:
+
+```bash
+python3 -m pip install pytest
+```
+
+Full example:
+
+```bash
+python3 -m pip install requests numpy netCDF4 pyproj fastapi uvicorn pytest
+```
+
+## Quick Start
+
+Run commands from the repo root:
+
+```bash
+cd /home/celaeno/script/atmospheric_optics
+python3 cli/main.py --lat 32.8 --lon -96.8
+```
+
+Important:
+
+- The CLI and API currently predict for the current UTC time.
+- Output can change from run to run as source data and solar geometry change.
 
 ## CLI Usage
 
-Run from the repo root:
+Default forecast mode:
 
 ```bash
 python3 cli/main.py --lat 32.8 --lon -96.8
 ```
 
-Forecast mode:
+Explicit forecast mode:
 
 ```bash
 python3 cli/main.py --lat 32.8 --lon -96.8 --mode forecast
@@ -74,7 +116,7 @@ Observed mode:
 python3 cli/main.py --lat 32.8 --lon -96.8 --mode observed
 ```
 
-Keep downloaded source artifacts:
+Keep downloaded artifacts:
 
 ```bash
 python3 cli/main.py --lat 32.8 --lon -96.8 --mode observed --keep-downloaded-files
@@ -86,8 +128,13 @@ CLI options:
 - `--lat`: latitude in decimal degrees
 - `--lon`: longitude in decimal degrees
 - `--mode`: `forecast` or `observed`
-- `--keep-downloaded-files`: retain downloaded source artifacts
+- `--keep-downloaded-files`: retain downloaded weather-source artifacts
 - `--download-dir`: custom artifact directory
+
+Default artifact directories:
+
+- forecast: `data_cache/noaa_gfs`
+- observed: `data_cache/nws_observations`
 
 ## Output Format
 
@@ -129,63 +176,73 @@ Example observed response:
 }
 ```
 
-Timestamp conventions:
+Timestamp formats:
 
 - GFS: `YYYYMMDD HHz fNNN`
 - GOES: `YYYYMMDD HHMMSSz`
 - METAR: `YYYYMMDD HHMMz`
 
+Possible source names:
+
+- `gfs`
+- `goes-east`
+- `goes-west`
+- `metar`
+
 ## API Usage
 
-If `fastapi` is not installed, you can run the built-in WSGI server:
+If `fastapi` is not installed, the repo includes a standard-library WSGI server:
 
 ```bash
 python3 api/main.py
 ```
 
-Then call:
+Then request:
 
 ```bash
 curl "http://127.0.0.1:8000/predict?lat=32.8&lon=-96.8&mode=forecast"
 ```
 
-If `fastapi` and `uvicorn` are installed, use:
+If `fastapi` and `uvicorn` are installed, run:
 
 ```bash
 uvicorn api.main:app --reload
 ```
 
-## Data Sources
+## Data Source Behavior
 
 Forecast mode:
 
 - NOAA NOMADS GFS
+- newest cycle attempted first
+- older cycles used automatically if the newest file is not published yet
 
 Observed mode:
 
-- NOAA GOES cloud-layer products
-- Aviation Weather Center METAR observations
-- NOAA/NWS station discovery
+- NOAA GOES cloud-layer products for cirrus and high-cloud conditions
+- Aviation Weather Center METAR observations for precipitation and cloud layers
+- NOAA/NWS station discovery for locating nearby observing stations
 
-Behavior notes:
+Fallback behavior:
 
-- Forecast mode tries the newest GFS cycle first and falls back to older cycles if the latest file is not published yet.
-- Observed mode prefers GOES for cirrus/high-cloud detection and METAR for precipitation/cloud layers.
-- If GOES is unavailable, observed mode falls back to GFS for the missing upper-air and high-cloud inputs.
+- If GOES data is unavailable, observed mode falls back to GFS for missing upper-air and high-cloud inputs.
+- If the latest GFS cycle is unavailable, forecast mode falls back to older cycles quietly before failing.
 
-## Model Notes
+## Model Summary
 
-The current implementation uses a smooth, physics-informed probability model:
+The current implementation follows the quantitative model described in `MODELS.md`.
+
+Each probability is built from smooth components such as:
 
 - `PhysicalCondition`
 - `Visibility`
 - `Geometry`
 
-Each final prediction is a weighted combination of those terms using sigmoid and gaussian helper functions. The detailed specification lives in `MODELS.md`.
+The model uses sigmoid and gaussian helper functions plus weighted combination terms, rather than hard threshold rules.
 
 ## Tests
 
-Run the full test suite with:
+Run the full suite:
 
 ```bash
 pytest -q tests
