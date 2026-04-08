@@ -247,12 +247,3 @@ Run the full suite:
 ```bash
 pytest -q tests
 ```
-
-## Repo Docs
-
-- `ARCHITECTURE.md`: system design
-- `DATA_SOURCES.md`: source selection rules
-- `MODELS.md`: quantitative model definition
-- `TASKS.md`: implementation phases
-- `TESTS.md`: test expectations
-- `CODING_GUIDELINES.md`: local coding conventions
