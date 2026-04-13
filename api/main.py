@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from http import HTTPStatus
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -17,27 +18,76 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.predictor import predict_all
 
 try:
-    from fastapi import FastAPI
+    from fastapi import FastAPI, HTTPException
 except ImportError:  # pragma: no cover - exercised through the WSGI fallback.
     FastAPI = None
+    HTTPException = None
 
 
 FASTAPI_AVAILABLE = FastAPI is not None
 WEATHER_MODES = ("forecast", "observed")
 
 
-def build_prediction_response(lat: float, lon: float, mode: str = "forecast") -> dict[str, object]:
+def build_prediction_response(
+    lat: float,
+    lon: float,
+    mode: str = "forecast",
+    at_time: str | None = None,
+    time_window_hours: str | None = None,
+    phenomena: str | None = None,
+    spatial_resolution_km: float | None = None,
+    lightweight: bool = False,
+    debug: bool = False,
+) -> dict[str, object]:
     """Return a JSON-serializable prediction payload."""
 
-    return predict_all(lat, lon, mode=mode)
+    predictor_kwargs: dict[str, object] = {
+        "mode": mode,
+        "at_time": _parse_at_time(at_time),
+        "time_window_hours": _parse_time_window_hours(time_window_hours),
+    }
+    parsed_phenomena = _parse_csv_values(phenomena)
+    if parsed_phenomena is not None:
+        predictor_kwargs["phenomena"] = parsed_phenomena
+    if spatial_resolution_km is not None:
+        predictor_kwargs["spatial_resolution_km"] = spatial_resolution_km
+    if lightweight:
+        predictor_kwargs["lightweight"] = True
+    if debug:
+        predictor_kwargs["debug"] = True
+
+    return predict_all(lat, lon, **predictor_kwargs)
 
 
 if FASTAPI_AVAILABLE:
     app = FastAPI(title="Atmospheric Optics Predictor")
 
     @app.get("/predict")
-    def predict_endpoint(lat: float, lon: float, mode: str = "forecast") -> dict[str, object]:
-        return build_prediction_response(lat, lon, mode=mode)
+    def predict_endpoint(
+        lat: float,
+        lon: float,
+        mode: str = "forecast",
+        at_time: str | None = None,
+        time_window_hours: str | None = None,
+        phenomena: str | None = None,
+        spatial_resolution_km: float | None = None,
+        lightweight: bool = False,
+        debug: bool = False,
+    ) -> dict[str, object]:
+        try:
+            return build_prediction_response(
+                lat,
+                lon,
+                mode=mode,
+                at_time=at_time,
+                time_window_hours=time_window_hours,
+                phenomena=phenomena,
+                spatial_resolution_km=spatial_resolution_km,
+                lightweight=lightweight,
+                debug=debug,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 else:
 
@@ -53,7 +103,17 @@ else:
                 lat = _required_float(query, "lat")
                 lon = _required_float(query, "lon")
                 mode = _optional_mode(query)
-                payload = build_prediction_response(lat, lon, mode=mode)
+                payload = build_prediction_response(
+                    lat,
+                    lon,
+                    mode=mode,
+                    at_time=_optional_string(query, "at_time"),
+                    time_window_hours=_optional_string(query, "time_window_hours"),
+                    phenomena=_optional_string(query, "phenomena"),
+                    spatial_resolution_km=_optional_float(query, "spatial_resolution_km"),
+                    lightweight=_optional_bool(query, "lightweight"),
+                    debug=_optional_bool(query, "debug"),
+                )
             except ValueError as exc:
                 return _json_response(start_response, HTTPStatus.BAD_REQUEST, {"detail": str(exc)})
 
@@ -82,6 +142,36 @@ else:
         return mode
 
 
+    def _optional_string(query: dict[str, list[str]], key: str) -> str | None:
+        values = query.get(key)
+        if not values:
+            return None
+        value = values[0].strip()
+        return value or None
+
+
+    def _optional_float(query: dict[str, list[str]], key: str) -> float | None:
+        value = _optional_string(query, key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid float for {key}: {value}") from exc
+
+
+    def _optional_bool(query: dict[str, list[str]], key: str) -> bool:
+        value = _optional_string(query, key)
+        if value is None:
+            return False
+        normalized = value.lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"Invalid boolean for {key}: {value}")
+
+
     def _json_response(start_response, status: HTTPStatus, payload: dict[str, object]) -> list[bytes]:
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
         start_response(
@@ -105,6 +195,38 @@ def run(host: str = "127.0.0.1", port: int = 8000) -> None:
 
     with make_server(host, port, app) as server:
         server.serve_forever()
+
+def _parse_at_time(value: str | None) -> datetime | None:
+    if value is None or not value.strip():
+        return None
+
+    parsed_value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if parsed_value.tzinfo is None:
+        return parsed_value.replace(tzinfo=timezone.utc)
+    return parsed_value.astimezone(timezone.utc)
+
+
+def _parse_time_window_hours(value: str | None) -> tuple[int, ...] | None:
+    if value is None or not value.strip():
+        return None
+
+    hours: list[int] = []
+    for part in value.split(","):
+        normalized_part = part.strip()
+        if not normalized_part:
+            continue
+        hours.append(int(normalized_part))
+    return tuple(hours)
+
+
+def _parse_csv_values(value: str | None) -> tuple[str, ...] | None:
+    if value is None or not value.strip():
+        return None
+
+    items = [part.strip() for part in value.split(",") if part.strip()]
+    if not items:
+        return None
+    return tuple(items)
 
 
 if __name__ == "__main__":

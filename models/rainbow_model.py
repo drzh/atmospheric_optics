@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from models.combine import ModelComponents, combine_log
 from models.probability import (
     DEFAULT_WEIGHTS,
     ModelWeights,
-    combine_probability,
     gaussian,
     nonnegative_feature,
     numeric_feature,
@@ -32,7 +32,9 @@ DEFAULT_RAINBOW_PARAMETERS = RainbowParameters()
 def predict_rainbow(
     features: Mapping[str, float],
     parameters: RainbowParameters = DEFAULT_RAINBOW_PARAMETERS,
-) -> float:
+    *,
+    return_components: bool = False,
+) -> float | ModelComponents:
     """Predict the probability of rainbow conditions."""
 
     physical = sigmoid(
@@ -47,4 +49,10 @@ def predict_rainbow(
         sigma=parameters.geometry_sigma,
     )
 
-    return combine_probability(physical, visibility, geometry, parameters.weights)
+    return combine_log(
+        physical,
+        visibility,
+        geometry,
+        parameters.weights,
+        return_components=return_components,
+    )
