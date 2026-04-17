@@ -1,11 +1,11 @@
 # Atmospheric Optics Predictor
 
-Predict atmospheric optical phenomena such as halos, sundogs, circumzenithal arcs, circumhorizontal arcs, upper tangent arcs, sun pillars, crepuscular rays, fogbows, and rainbows from live weather inputs.
+Predict atmospheric optical phenomena from live weather inputs for both solar and lunar illumination modes.
 
 The current implementation combines:
 
 - weather ingestion from forecast and observed sources
-- solar position calculation
+- solar and lunar position calculation
 - derived feature engineering with multi-layer ice support and wind stability
 - smooth quantitative probability models with weighted log combination
 - adaptive km-based spatial sampling with distance and directional weighting
@@ -16,6 +16,8 @@ Predictions are returned as a top-level object with `generated_at`, `request`, `
 
 ## Supported Phenomena
 
+Solar mode:
+
 - `halo`
 - `parhelia`
 - `cza`
@@ -25,6 +27,14 @@ Predictions are returned as a top-level object with `generated_at`, `request`, `
 - `crepuscular_rays`
 - `rainbow`
 - `fogbow`
+
+Lunar mode:
+
+- `lunar_halo`
+- `paraselenae`
+- `lunar_pillar`
+- `lunar_corona`
+- `moonbow`
 
 ## Weather Modes
 
@@ -114,6 +124,12 @@ Default forecast mode:
 python3 cli/main.py --lat 32.8 --lon -96.8
 ```
 
+Lunar mode:
+
+```bash
+python3 cli/main.py --lat 32.8 --lon -96.8 --illumination lunar
+```
+
 Explicit forecast mode:
 
 ```bash
@@ -138,6 +154,7 @@ CLI options:
 - `--lat`: latitude in decimal degrees
 - `--lon`: longitude in decimal degrees
 - `--mode`: `forecast` or `observed`
+- `--illumination`: `solar` or `lunar`
 - `--at-time`: optional ISO 8601 prediction time
 - `--time-window-hours`: optional comma-separated horizon offsets such as `0,1,2,3`
 - `--phenomena`: optional comma-separated subset such as `halo,fogbow`
@@ -178,6 +195,7 @@ The predictor returns one JSON object per request:
     "options": {
       "lightweight": false,
       "debug": false,
+      "illumination": "solar",
       "phenomena": ["halo", "fogbow"]
     }
   },
@@ -277,7 +295,7 @@ The predictor returns one JSON object per request:
 Top-level fields:
 
 - `generated_at`: UTC timestamp for when the predictor finished building the payload.
-- `request`: normalized request metadata, including the resolved location, mode, prediction time, requested horizon, and runtime options.
+- `request`: normalized request metadata, including the resolved location, mode, illumination, prediction time, requested horizon, and runtime options.
 - `sources`: list of source objects used for the prediction. Each source has `id`, `label`, `kind`, and `timestamp`.
 - `phenomena`: list of per-phenomenon result objects. A list is used instead of top-level keyed fields so the format can grow without changing the surrounding envelope.
 
@@ -328,7 +346,7 @@ Current spatial behavior:
 
 - Base radii remain phenomenon-specific, but the effective `radius_km` is adaptive and scales with `cloud_variability` and `wind_shear_250`.
 - All phenomena use the same weighted-blend aggregation after distance weighting.
-- `rainbow`, `crepuscular_rays`, and `sun_pillar` also apply directional weighting using solar azimuth.
+- `rainbow`, `crepuscular_rays`, `sun_pillar`, `moonbow`, and `lunar_pillar` also apply directional weighting using the active source azimuth.
 
 Practical guidance:
 
@@ -353,6 +371,7 @@ curl "http://127.0.0.1:8000/predict?lat=32.8&lon=-96.8&mode=forecast"
 Optional API query parameters:
 
 - `at_time=2026-04-13T18:00:00Z`
+- `illumination=lunar`
 - `time_window_hours=0,1,2,3`
 - `phenomena=halo,fogbow`
 - `spatial_resolution_km=10`
@@ -391,6 +410,7 @@ Fallback behavior:
 - Observed-mode time-window output uses persistence for the weather fields and updates solar geometry across the horizon.
 - If the latest GFS cycle is unavailable, forecast mode falls back to older cycles quietly before failing.
 - Confidence now combines explicit data, feature, spatial, and temporal components, with source quality folded into the data term.
+- Lunar mode uses the same weather field but switches the active geometry and visibility source to the Moon, including moon-phase and sky-darkness scaling.
 
 ## Model Summary
 
@@ -416,7 +436,8 @@ Shared implementation details:
 - `plate_alignment = exp(-wind_shear_250) * exp(-vertical_velocity_variance)` when both inputs are available
 - `wind_stability = exp(-wind_shear_250 - vertical_velocity_variance)`
 - `cloud_variability` is derived from a 3x3 cloud-cover neighborhood when present, otherwise fallback `0.3`
-- `sun_visible = sigmoid(solar_elevation; 1.5, -2.0)` for twilight-aware visibility
+- `source_visible = sigmoid(source_elevation; 1.5, -2.0)` with lunar mode further scaled by moon phase and sky darkness
+- `brightness_factor = 1.0` in solar mode, and approximately `moon_phase^1.5 * sky_darkness` in lunar mode
 - `precipitation` is a non-negative precipitation signal.
 - `surface_visibility` and `fog_presence` are populated from METAR parsing, so they are most informative in `observed` mode.
 - Predictor output also includes:
@@ -553,6 +574,14 @@ Rule summary: fogbows favor fog or mist, low visibility, visible sun, and only l
 
 Practical note: `fogbow` is best supported in `observed` mode because `surface_visibility` and `fog_presence` come from METAR parsing.
 
+Lunar reuse summary:
+
+- `lunar_halo` reuses the halo model with lunar source geometry and brightness scaling
+- `paraselenae` reuses the parhelia model with lunar source geometry and brightness scaling
+- `lunar_pillar` reuses the sun-pillar model with lunar source geometry and brightness scaling
+- `moonbow` reuses the rainbow model with lunar source geometry and brightness scaling
+- `lunar_corona` is a lunar-specific thin-cloud diffraction model
+
 ## Alert Integration
 
 The sibling alert project can invoke this predictor directly through the `atmospheric_optics` provider.
@@ -573,6 +602,7 @@ timeout_seconds = 180
 lat = 32.847
 lon = -96.806
 mode = "observed"
+illumination = "solar"
 project_dir = "/home/celaeno/script/atmospheric_optics"
 phenomena = [
   "halo",
@@ -592,9 +622,20 @@ Notes:
 - `threshold` is applied to each phenomenon's `peak.probability`.
 - `timeout_seconds` can be raised for observed-mode targets so GOES and METAR ingestion have enough time to complete in cron jobs.
 - If `phenomena` is omitted, the alert provider defaults to all supported phenomena.
+- `illumination` is optional and defaults to `solar`; set it to `lunar` to run the moonlit phenomenon set.
 - Optional target options `at_time` and `time_window_hours` are passed through to the CLI.
 - Alert items use the phenomenon object's `peak.probability`, `peak.time`, and `current.reason`.
 - Exported JSON preserves the nested per-phenomenon structure, including `spatial_context`, instead of flattening it.
+
+Web export example:
+
+```bash
+python3 /home/celaeno/script/alert/export_atmospheric_optics_json.py \
+  --config /home/celaeno/script/alert/alerts.toml \
+  --source atmospheric_optics \
+  --prediction-only \
+  --output /home/celaeno/web/astro/table/atmospheric_optics.json
+```
 
 ## Tests
 

@@ -9,6 +9,7 @@ from .ice_crystal_model import (
     predict_sun_pillar,
     predict_upper_tangent_arc,
 )
+from .lunar_model import predict_lunar_corona
 from .scattering_model import predict_crepuscular_rays, predict_fogbow
 
 __all__ = [
@@ -18,6 +19,7 @@ __all__ = [
     "predict_crepuscular_rays",
     "predict_fogbow",
     "predict_halo",
+    "predict_lunar_corona",
     "predict_parhelia",
     "predict_rainbow",
     "predict_sun_pillar",

@@ -16,13 +16,25 @@ from models.probability import (
     unit_feature,
 )
 
+
+def _source_elevation(features: Mapping[str, float]) -> float:
+    source_elevation = numeric_feature(features, "source_elevation")
+    if math.isfinite(source_elevation):
+        return source_elevation
+    return numeric_feature(features, "solar_elevation")
+
+
 def _ice_crystal_support(features: Mapping[str, float]) -> float:
     return unit_feature(features, "ice_presence") * unit_feature(features, "thin_cirrus")
 
 
-def _solar_visibility(features: Mapping[str, float], *, cloud_penalty: float = 1.0) -> float:
-    return unit_feature(features, "sun_visible") * math.exp(
+def _source_visibility(features: Mapping[str, float], *, cloud_penalty: float = 1.0) -> float:
+    return (
+        unit_feature(features, "source_visible", default=unit_feature(features, "sun_visible"))
+        * math.exp(
         -(cloud_penalty * unit_feature(features, "cloud_optical_thickness"))
+        )
+        * unit_feature(features, "brightness_factor", default=1.0)
     )
 
 
@@ -68,14 +80,14 @@ def predict_circumhorizontal_arc(
     """Predict the probability of a circumhorizontal arc."""
 
     physical = _ice_crystal_support(features)
-    visibility = _solar_visibility(features)
-    solar_elevation = numeric_feature(features, "solar_elevation")
+    visibility = _source_visibility(features)
+    source_elevation = _source_elevation(features)
     geometry = sigmoid(
-        solar_elevation,
+        source_elevation,
         k=parameters.geometry_threshold_k,
         x0=parameters.geometry_threshold_x0,
     ) * gaussian(
-        solar_elevation,
+        source_elevation,
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     )
@@ -97,14 +109,14 @@ def predict_upper_tangent_arc(
     """Predict the probability of an upper tangent arc."""
 
     physical = _ice_crystal_support(features)
-    visibility = _solar_visibility(features)
-    solar_elevation = numeric_feature(features, "solar_elevation")
+    visibility = _source_visibility(features)
+    source_elevation = _source_elevation(features)
     geometry = gaussian(
-        solar_elevation,
+        source_elevation,
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     ) * (1.0 - sigmoid(
-        solar_elevation,
+        source_elevation,
         k=parameters.geometry_max_elevation_k,
         x0=parameters.geometry_max_elevation_x0,
     ))
@@ -130,14 +142,14 @@ def predict_sun_pillar(
         unit_feature(features, "humidity_250"),
     )
     physical *= 0.7 + (0.3 * unit_feature(features, "wind_stability", default=0.5))
-    visibility = _solar_visibility(features, cloud_penalty=parameters.cloud_penalty)
-    solar_elevation = numeric_feature(features, "solar_elevation")
+    visibility = _source_visibility(features, cloud_penalty=parameters.cloud_penalty)
+    source_elevation = _source_elevation(features)
     geometry = gaussian(
-        solar_elevation,
+        source_elevation,
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     ) * (1.0 - sigmoid(
-        solar_elevation,
+        source_elevation,
         k=parameters.geometry_max_elevation_k,
         x0=parameters.geometry_max_elevation_x0,
     ))

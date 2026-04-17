@@ -139,3 +139,31 @@ def test_compute_features_uses_multi_layer_ice_and_condensate_proxy() -> None:
     assert result["cloud_optical_thickness"] == pytest.approx(0.48)
     assert result["thin_cirrus"] == pytest.approx(0.3063143087800897)
     assert result["ice_presence"] == pytest.approx(0.47)
+
+
+def test_compute_features_supports_lunar_visibility_and_darkness() -> None:
+    weather = {
+        "cloud_cover_high": 0.5,
+        "cloud_optical_thickness": 0.2,
+    }
+    moon = {
+        "elevation": 15.0,
+        "azimuth": 135.0,
+        "phase": 0.9,
+        "illuminance": 0.85,
+    }
+    solar = {
+        "elevation": -18.0,
+        "azimuth": 250.0,
+    }
+
+    result = compute_features(weather, moon, illumination="lunar", solar=solar)
+
+    assert result["source_elevation"] == pytest.approx(15.0)
+    assert result["source_azimuth"] == pytest.approx(135.0)
+    assert result["moon_elevation"] == pytest.approx(15.0)
+    assert result["moon_phase"] == pytest.approx(0.9)
+    assert result["moon_visible"] > 0.9
+    assert result["brightness_factor"] == pytest.approx(0.9**1.5)
+    assert result["sky_darkness"] == pytest.approx(1.0)
+    assert result["solar_elevation"] == pytest.approx(-18.0)

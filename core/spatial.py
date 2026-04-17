@@ -19,11 +19,18 @@ SPATIAL_RADIUS_KM: dict[str, float] = {
     "rainbow": 25.0,
     "sun_pillar": 15.0,
     "fogbow": 10.0,
+    "lunar_halo": 40.0,
+    "paraselenae": 40.0,
+    "lunar_pillar": 15.0,
+    "lunar_corona": 15.0,
+    "moonbow": 25.0,
 }
 DIRECTIONAL_PHENOMENA = {
     "rainbow",
     "crepuscular_rays",
     "sun_pillar",
+    "moonbow",
+    "lunar_pillar",
 }
 
 

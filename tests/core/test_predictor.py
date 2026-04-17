@@ -71,6 +71,7 @@ def test_predict_all_returns_structured_payload() -> None:
         "options": {
             "lightweight": False,
             "debug": False,
+            "illumination": "solar",
         },
     }
     assert result["sources"] == [
@@ -185,6 +186,7 @@ def test_predict_all_supports_selected_phenomena_and_debug_payloads() -> None:
     assert result["request"]["options"] == {
         "lightweight": True,
         "debug": True,
+        "illumination": "solar",
         "phenomena": ["halo", "rainbow"],
     }
     phenomena = _phenomena_by_id(result)
@@ -234,3 +236,37 @@ def test_predict_all_ignores_time_slots_beyond_three_hours() -> None:
     assert result["request"]["time_window_hours"] == [0, 1, 3]
     halo_timeline = _phenomena_by_id(result)["halo"]["timeline"]
     assert [entry["label"] for entry in halo_timeline] == ["now", "1h", "3h"]
+
+
+def test_predict_all_supports_lunar_mode() -> None:
+    with patch(
+        "core.predictor.get_weather_snapshot",
+        return_value=WeatherSnapshot(
+            weather={
+                "cloud_cover_high": 0.6,
+                "cloud_optical_thickness": 0.2,
+                "humidity_250": 0.8,
+                "precipitation": 0.6,
+            },
+            sources=(SourceAttribution(name="gfs", timestamp="20260407 12z f006"),),
+        ),
+    ):
+        with patch(
+            "core.predictor.get_solar_position",
+            return_value={"elevation": -18.0, "azimuth": 180.0},
+        ):
+            with patch(
+                "core.predictor.get_lunar_position",
+                return_value={"elevation": 12.0, "azimuth": 140.0, "phase": 0.95, "illuminance": 0.93},
+            ):
+                result = predict_all(32.8, -96.8, illumination="lunar", lightweight=True)
+
+    assert result["request"]["options"]["illumination"] == "lunar"
+    phenomena = _phenomena_by_id(result)
+    assert tuple(phenomena) == (
+        "lunar_halo",
+        "paraselenae",
+        "lunar_pillar",
+        "lunar_corona",
+        "moonbow",
+    )

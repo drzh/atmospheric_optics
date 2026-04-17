@@ -21,12 +21,15 @@ TWILIGHT_VISIBILITY_SIGMOID_X0 = -2.0
 
 def compute_features(
     weather: Mapping[str, object],
-    solar: Mapping[str, object],
+    source: Mapping[str, object],
+    *,
+    illumination: str = "solar",
+    solar: Mapping[str, object] | None = None,
 ) -> dict[str, float]:
-    """Compute rule-friendly features from weather and solar inputs."""
+    """Compute rule-friendly features from weather and source-position inputs."""
 
-    solar_elevation = _coerce_float(solar.get("elevation"))
-    solar_azimuth = _coerce_float(solar.get("azimuth"))
+    source_elevation = _coerce_float(source.get("elevation"))
+    source_azimuth = _coerce_float(source.get("azimuth"))
     cirrus_coverage = _normalize_fraction(
         weather.get("cirrus_coverage", weather.get("cloud_cover_high"))
     )
@@ -42,8 +45,8 @@ def compute_features(
 
     thin_cirrus = compute_thin_cirrus(cirrus_coverage, cloud_optical_thickness)
     ice_cloud_fraction = _normalize_fraction(weather.get("ice_cloud_fraction"))
-    sun_visibility = _sigmoid(
-        solar_elevation,
+    source_visibility = _sigmoid(
+        source_elevation,
         k=TWILIGHT_VISIBILITY_SIGMOID_K,
         x0=TWILIGHT_VISIBILITY_SIGMOID_X0,
     )
@@ -56,6 +59,33 @@ def compute_features(
         wind_shear_250,
         vertical_velocity_variance=vertical_velocity_variance,
     )
+    is_lunar = illumination.strip().lower() == "lunar"
+    solar_elevation = source_elevation
+    solar_azimuth = source_azimuth
+    moon_elevation = math.nan
+    moon_azimuth = math.nan
+    moon_phase = math.nan
+    moon_visible = math.nan
+    moon_illuminance = math.nan
+    sky_darkness = _compute_sky_darkness(solar_elevation)
+    brightness_factor = 1.0
+
+    if is_lunar:
+        solar_elevation = _coerce_float((solar or {}).get("elevation"))
+        solar_azimuth = _coerce_float((solar or {}).get("azimuth"))
+        moon_elevation = source_elevation
+        moon_azimuth = source_azimuth
+        moon_phase = _normalize_fraction(source.get("phase"))
+        moon_visible = source_visibility * _sigmoid(moon_phase, k=10.0, x0=0.5)
+        moon_illuminance = _normalize_fraction(source.get("illuminance"))
+        if not math.isfinite(moon_illuminance):
+            moon_illuminance = _clamp_unit_interval(moon_phase**1.5) if math.isfinite(moon_phase) else 0.0
+        sky_darkness = _compute_sky_darkness(solar_elevation)
+        brightness_factor = (
+            _clamp_unit_interval(moon_phase**1.5) * sky_darkness if math.isfinite(moon_phase) else 0.0
+        )
+        source_visibility = moon_visible
+
     features = {
         "cirrus_coverage": cirrus_coverage,
         "cloud_optical_thickness": cloud_optical_thickness,
@@ -68,10 +98,21 @@ def compute_features(
         "ice_200mb": ice_200mb,
         "wind_shear_250": wind_shear_250,
         "vertical_velocity_variance": vertical_velocity_variance,
+        "source_elevation": source_elevation,
+        "source_azimuth": source_azimuth,
+        "source_visible": source_visibility,
+        "brightness_factor": brightness_factor,
+        "is_lunar": 1.0 if is_lunar else 0.0,
         "solar_elevation": solar_elevation,
         "solar_azimuth": solar_azimuth,
-        "sun_visible": sun_visibility,
-        "sun_visibility": sun_visibility,
+        "sun_visible": source_visibility if not is_lunar else _sigmoid(solar_elevation, k=TWILIGHT_VISIBILITY_SIGMOID_K, x0=TWILIGHT_VISIBILITY_SIGMOID_X0),
+        "sun_visibility": source_visibility if not is_lunar else _sigmoid(solar_elevation, k=TWILIGHT_VISIBILITY_SIGMOID_K, x0=TWILIGHT_VISIBILITY_SIGMOID_X0),
+        "moon_elevation": moon_elevation,
+        "moon_azimuth": moon_azimuth,
+        "moon_phase": moon_phase,
+        "moon_visible": moon_visible,
+        "moon_illuminance": moon_illuminance,
+        "sky_darkness": sky_darkness,
         "precipitation": _nonnegative_or_nan(weather.get("precipitation")),
         "surface_visibility": _nonnegative_or_nan(weather.get("surface_visibility")),
         "fog_presence": _normalize_fraction(weather.get("fog_presence")),
@@ -128,6 +169,16 @@ def _sigmoid(x: float, *, k: float, x0: float) -> float:
     if not math.isfinite(x) or not math.isfinite(k) or not math.isfinite(x0):
         return 0.0
     return 1.0 / (1.0 + math.exp(-k * (x - x0)))
+
+
+def _compute_sky_darkness(solar_elevation: float) -> float:
+    if not math.isfinite(solar_elevation):
+        return 0.0
+    if solar_elevation <= -18.0:
+        return 1.0
+    if solar_elevation >= -6.0:
+        return 0.0
+    return _clamp_unit_interval((-6.0 - solar_elevation) / 12.0)
 
 
 def _hybrid_optical_thickness(

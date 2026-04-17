@@ -19,6 +19,7 @@ def _sample_payload() -> dict[str, object]:
             "options": {
                 "lightweight": False,
                 "debug": False,
+                "illumination": "solar",
                 "phenomena": ["halo", "fogbow"],
             },
         },
@@ -84,6 +85,7 @@ def test_build_prediction_response_delegates_to_predictor(monkeypatch) -> None:
         lat: float,
         lon: float,
         mode: str = "forecast",
+        illumination: str = "solar",
         at_time: datetime | None = None,
         time_window_hours: tuple[int, ...] | None = None,
         phenomena: tuple[str, ...] | None = None,
@@ -91,6 +93,7 @@ def test_build_prediction_response_delegates_to_predictor(monkeypatch) -> None:
         captured["lat"] = lat
         captured["lon"] = lon
         captured["mode"] = mode
+        captured["illumination"] = illumination
         captured["at_time"] = at_time
         captured["time_window_hours"] = time_window_hours
         captured["phenomena"] = phenomena
@@ -111,6 +114,7 @@ def test_build_prediction_response_delegates_to_predictor(monkeypatch) -> None:
         "lat": 32.0,
         "lon": -96.0,
         "mode": "observed",
+        "illumination": "solar",
         "at_time": datetime(2026, 4, 13, 18, 0, tzinfo=timezone.utc),
         "time_window_hours": (0, 1, 3),
         "phenomena": ("halo", "fogbow"),
@@ -129,7 +133,7 @@ def test_wsgi_predict_route_returns_json(monkeypatch) -> None:
     monkeypatch.setattr(
         api_main,
         "build_prediction_response",
-        lambda lat, lon, mode="forecast", at_time=None, time_window_hours=None, phenomena=None, spatial_resolution_km=None, lightweight=False, debug=False: _sample_payload(),
+        lambda lat, lon, mode="forecast", illumination="solar", at_time=None, time_window_hours=None, phenomena=None, spatial_resolution_km=None, lightweight=False, debug=False: _sample_payload(),
     )
 
     captured: dict[str, object] = {}

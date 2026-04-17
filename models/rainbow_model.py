@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Mapping
 
@@ -29,6 +30,13 @@ class RainbowParameters:
 DEFAULT_RAINBOW_PARAMETERS = RainbowParameters()
 
 
+def _source_elevation(features: Mapping[str, float]) -> float:
+    elevation = numeric_feature(features, "source_elevation")
+    if math.isfinite(elevation):
+        return elevation
+    return numeric_feature(features, "solar_elevation")
+
+
 def predict_rainbow(
     features: Mapping[str, float],
     parameters: RainbowParameters = DEFAULT_RAINBOW_PARAMETERS,
@@ -42,9 +50,12 @@ def predict_rainbow(
         k=parameters.precipitation_sigmoid_k,
         x0=parameters.precipitation_sigmoid_x0,
     )
-    visibility = unit_feature(features, "sun_visible")
+    visibility = (
+        unit_feature(features, "source_visible", default=unit_feature(features, "sun_visible"))
+        * unit_feature(features, "brightness_factor", default=1.0)
+    )
     geometry = gaussian(
-        numeric_feature(features, "solar_elevation"),
+        _source_elevation(features),
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     )

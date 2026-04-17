@@ -26,12 +26,14 @@ except ImportError:  # pragma: no cover - exercised through the WSGI fallback.
 
 FASTAPI_AVAILABLE = FastAPI is not None
 WEATHER_MODES = ("forecast", "observed")
+ILLUMINATION_MODES = ("solar", "lunar")
 
 
 def build_prediction_response(
     lat: float,
     lon: float,
     mode: str = "forecast",
+    illumination: str = "solar",
     at_time: str | None = None,
     time_window_hours: str | None = None,
     phenomena: str | None = None,
@@ -43,6 +45,7 @@ def build_prediction_response(
 
     predictor_kwargs: dict[str, object] = {
         "mode": mode,
+        "illumination": _normalize_illumination(illumination),
         "at_time": _parse_at_time(at_time),
         "time_window_hours": _parse_time_window_hours(time_window_hours),
     }
@@ -67,6 +70,7 @@ if FASTAPI_AVAILABLE:
         lat: float,
         lon: float,
         mode: str = "forecast",
+        illumination: str = "solar",
         at_time: str | None = None,
         time_window_hours: str | None = None,
         phenomena: str | None = None,
@@ -79,6 +83,7 @@ if FASTAPI_AVAILABLE:
                 lat,
                 lon,
                 mode=mode,
+                illumination=illumination,
                 at_time=at_time,
                 time_window_hours=time_window_hours,
                 phenomena=phenomena,
@@ -107,6 +112,7 @@ else:
                     lat,
                     lon,
                     mode=mode,
+                    illumination=_optional_illumination(query),
                     at_time=_optional_string(query, "at_time"),
                     time_window_hours=_optional_string(query, "time_window_hours"),
                     phenomena=_optional_string(query, "phenomena"),
@@ -140,6 +146,19 @@ else:
         if mode not in WEATHER_MODES:
             raise ValueError(f"Invalid mode: {mode}. Expected one of {', '.join(WEATHER_MODES)}")
         return mode
+
+
+    def _optional_illumination(query: dict[str, list[str]]) -> str:
+        values = query.get("illumination")
+        if not values or not values[0].strip():
+            return "solar"
+
+        illumination = values[0].strip().lower()
+        if illumination not in ILLUMINATION_MODES:
+            raise ValueError(
+                f"Invalid illumination: {illumination}. Expected one of {', '.join(ILLUMINATION_MODES)}"
+            )
+        return illumination
 
 
     def _optional_string(query: dict[str, list[str]], key: str) -> str | None:
@@ -217,6 +236,13 @@ def _parse_time_window_hours(value: str | None) -> tuple[int, ...] | None:
             continue
         hours.append(int(normalized_part))
     return tuple(hours)
+
+
+def _normalize_illumination(value: str) -> str:
+    illumination = str(value).strip().lower()
+    if illumination not in ILLUMINATION_MODES:
+        raise ValueError(f"Invalid illumination: {value}. Expected one of {', '.join(ILLUMINATION_MODES)}")
+    return illumination
 
 
 def _parse_csv_values(value: str | None) -> tuple[str, ...] | None:

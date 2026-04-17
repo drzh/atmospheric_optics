@@ -35,10 +35,21 @@ DEFAULT_HALO_PARAMETERS = HaloParameters()
 DEFAULT_PARHELIA_PARAMETERS = ParheliaParameters()
 
 
+def _source_elevation(features: Mapping[str, float]) -> float:
+    elevation = numeric_feature(features, "source_elevation")
+    if math.isfinite(elevation):
+        return elevation
+    return numeric_feature(features, "solar_elevation")
+
+
 def _ice_crystal_terms(features: Mapping[str, float]) -> tuple[float, float]:
     physical = unit_feature(features, "ice_presence") * unit_feature(features, "thin_cirrus")
-    visibility = unit_feature(features, "sun_visible") * math.exp(
+    visibility = (
+        unit_feature(features, "source_visible", default=unit_feature(features, "sun_visible"))
+        * math.exp(
         -unit_feature(features, "cloud_optical_thickness")
+        )
+        * unit_feature(features, "brightness_factor", default=1.0)
     )
     return physical, visibility
 
@@ -53,7 +64,7 @@ def predict_halo(
 
     physical, visibility = _ice_crystal_terms(features)
     geometry = gaussian(
-        numeric_feature(features, "solar_elevation"),
+        _source_elevation(features),
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     )
@@ -82,7 +93,7 @@ def predict_parhelia(
     )
     physical *= alignment
     geometry = gaussian(
-        numeric_feature(features, "solar_elevation"),
+        _source_elevation(features),
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     )

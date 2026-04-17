@@ -42,8 +42,10 @@ from models.ice_crystal_model import (
     predict_sun_pillar,
     predict_upper_tangent_arc,
 )
+from models.lunar_model import predict_lunar_corona
 from models.rainbow_model import predict_rainbow
 from models.scattering_model import predict_crepuscular_rays, predict_fogbow
+from solar.lunar_position import get_lunar_position
 from solar.solar_position import get_solar_position
 
 OUTPUT_DECIMALS = 3
@@ -51,7 +53,7 @@ MAX_TIME_WINDOW_HOURS = 3
 TIME_WINDOW_HOURS: tuple[int, ...] = (0, 1, 2, 3)
 PredictionFunction = Callable[[dict[str, float]], float]
 PointKey = tuple[float, float]
-PHENOMENA: tuple[str, ...] = (
+SOLAR_PHENOMENA: tuple[str, ...] = (
     "halo",
     "parhelia",
     "cza",
@@ -62,6 +64,15 @@ PHENOMENA: tuple[str, ...] = (
     "rainbow",
     "fogbow",
 )
+LUNAR_PHENOMENA: tuple[str, ...] = (
+    "lunar_halo",
+    "paraselenae",
+    "lunar_pillar",
+    "lunar_corona",
+    "moonbow",
+)
+PHENOMENA: tuple[str, ...] = SOLAR_PHENOMENA
+SUPPORTED_PHENOMENA: tuple[str, ...] = SOLAR_PHENOMENA + LUNAR_PHENOMENA
 PHENOMENON_METADATA: dict[str, dict[str, str]] = {
     "halo": {"label": "Halo", "category": "ice_crystal"},
     "parhelia": {"label": "Parhelia", "category": "ice_crystal"},
@@ -72,6 +83,11 @@ PHENOMENON_METADATA: dict[str, dict[str, str]] = {
     "crepuscular_rays": {"label": "Crepuscular Rays", "category": "cloud_shadow"},
     "rainbow": {"label": "Rainbow", "category": "water_droplet"},
     "fogbow": {"label": "Fogbow", "category": "water_droplet"},
+    "lunar_halo": {"label": "Lunar Halo", "category": "ice_crystal"},
+    "paraselenae": {"label": "Paraselenae", "category": "ice_crystal"},
+    "lunar_pillar": {"label": "Lunar Pillar", "category": "ice_crystal"},
+    "lunar_corona": {"label": "Lunar Corona", "category": "water_droplet"},
+    "moonbow": {"label": "Moonbow", "category": "water_droplet"},
 }
 SOURCE_METADATA: dict[str, dict[str, str]] = {
     "goes-east": {"label": "GOES East", "kind": "satellite"},
@@ -106,6 +122,33 @@ PHENOMENON_FEATURES: dict[str, tuple[str, ...]] = {
     "crepuscular_rays": ("cirrus_coverage", "cloud_variability", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
     "rainbow": ("precipitation", "sun_visible", "solar_elevation"),
     "fogbow": ("fog_presence", "surface_visibility", "precipitation", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
+    "lunar_halo": ("ice_presence", "thin_cirrus", "source_visible", "brightness_factor", "cloud_optical_thickness", "source_elevation", "moon_phase", "sky_darkness"),
+    "paraselenae": (
+        "ice_presence",
+        "thin_cirrus",
+        "plate_alignment",
+        "wind_stability",
+        "source_visible",
+        "brightness_factor",
+        "cloud_optical_thickness",
+        "source_elevation",
+        "moon_phase",
+        "sky_darkness",
+    ),
+    "lunar_pillar": (
+        "ice_presence",
+        "thin_cirrus",
+        "humidity_250",
+        "wind_stability",
+        "source_visible",
+        "brightness_factor",
+        "cloud_optical_thickness",
+        "source_elevation",
+        "moon_phase",
+        "sky_darkness",
+    ),
+    "lunar_corona": ("source_visible", "brightness_factor", "moon_phase", "sky_darkness", "cloud_optical_thickness", "cloud_variability"),
+    "moonbow": ("precipitation", "source_visible", "brightness_factor", "source_elevation", "moon_phase", "sky_darkness"),
 }
 
 
@@ -154,6 +197,7 @@ def predict_all(
     lightweight: bool = False,
     debug: bool = False,
     phenomena: Iterable[str] | None = None,
+    illumination: str = "solar",
 ) -> dict[str, object]:
     """Predict all supported atmospheric optics probabilities."""
 
@@ -161,7 +205,9 @@ def predict_all(
     prediction_time = _resolve_prediction_time(at_time)
     resolved_time_window_hours = _normalize_time_window_hours(time_window_hours)
     resolved_spatial_resolution_km = _normalize_spatial_resolution_km(spatial_resolution_km)
-    selected_phenomena = _normalize_selected_phenomena(phenomena)
+    resolved_illumination = _normalize_illumination(illumination)
+    active_phenomena = _phenomena_for_illumination(resolved_illumination)
+    selected_phenomena = _normalize_selected_phenomena(phenomena, active_phenomena)
     predictors = _prediction_functions()
     caches = PredictorCaches()
     center_snapshot = _load_weather_snapshot(
@@ -189,6 +235,8 @@ def predict_all(
             spatial_resolution_km=resolved_spatial_resolution_km,
             lightweight=lightweight,
             include_debug=debug,
+            phenomena=selected_phenomena,
+            illumination=resolved_illumination,
         )
         for hour_offset in resolved_time_window_hours
     ]
@@ -203,11 +251,12 @@ def predict_all(
         "options": {
             "lightweight": bool(lightweight),
             "debug": bool(debug),
+            "illumination": resolved_illumination,
         },
     }
     if resolved_spatial_resolution_km is not None:
         request_payload["options"]["spatial_resolution_km"] = _round_output_float(resolved_spatial_resolution_km)
-    if tuple(selected_phenomena) != PHENOMENA:
+    if tuple(selected_phenomena) != active_phenomena:
         request_payload["options"]["phenomena"] = list(selected_phenomena)
 
     result: dict[str, object] = {
@@ -360,12 +409,33 @@ def _prediction_functions() -> dict[str, PredictionFunction]:
         "crepuscular_rays": predict_crepuscular_rays,
         "rainbow": predict_rainbow,
         "fogbow": predict_fogbow,
+        "lunar_halo": predict_halo,
+        "paraselenae": predict_parhelia,
+        "lunar_pillar": predict_sun_pillar,
+        "lunar_corona": predict_lunar_corona,
+        "moonbow": predict_rainbow,
     }
 
 
-def _normalize_selected_phenomena(phenomena: Iterable[str] | None) -> tuple[str, ...]:
+def _normalize_illumination(illumination: str) -> str:
+    normalized = str(illumination).strip().lower()
+    if normalized in {"", "solar"}:
+        return "solar"
+    if normalized == "lunar":
+        return "lunar"
+    raise ValueError(f"Unsupported illumination: {illumination}")
+
+
+def _phenomena_for_illumination(illumination: str) -> tuple[str, ...]:
+    return LUNAR_PHENOMENA if illumination == "lunar" else SOLAR_PHENOMENA
+
+
+def _normalize_selected_phenomena(
+    phenomena: Iterable[str] | None,
+    supported_phenomena: tuple[str, ...],
+) -> tuple[str, ...]:
     if phenomena is None:
-        return PHENOMENA
+        return supported_phenomena
 
     selected: list[str] = []
     invalid: list[str] = []
@@ -373,7 +443,7 @@ def _normalize_selected_phenomena(phenomena: Iterable[str] | None) -> tuple[str,
         name = str(value).strip().lower()
         if not name:
             continue
-        if name not in PHENOMENA:
+        if name not in supported_phenomena:
             invalid.append(name)
             continue
         if name not in selected:
@@ -416,6 +486,8 @@ def _evaluate_time_slot(
     spatial_resolution_km: float | None,
     lightweight: bool,
     include_debug: bool,
+    phenomena: tuple[str, ...],
+    illumination: str,
 ) -> TimeSlotEvaluation:
     center_point_evaluation = _evaluate_point(
         lat,
@@ -428,6 +500,8 @@ def _evaluate_time_slot(
         predictors=predictors,
         caches=caches,
         include_debug=include_debug,
+        phenomena=phenomena,
+        illumination=illumination,
     )
     samples_by_phenomenon, radii_by_phenomenon = _samples_by_phenomenon(
         lat,
@@ -435,6 +509,7 @@ def _evaluate_time_slot(
         center_features=center_point_evaluation.features,
         spatial_resolution_km=spatial_resolution_km,
         lightweight=lightweight,
+        phenomena=phenomena,
     )
     unique_points = _unique_sample_points(samples_by_phenomenon)
     center_key = _point_key(lat, lon)
@@ -463,6 +538,8 @@ def _evaluate_time_slot(
                         predictors=predictors,
                         caches=caches,
                         include_debug=include_debug,
+                        phenomena=phenomena,
+                        illumination=illumination,
                     ): point_key
                     for point_key, point_lat, point_lon in remaining_points
                 }
@@ -481,12 +558,14 @@ def _evaluate_time_slot(
                 predictors=predictors,
                 caches=caches,
                 include_debug=include_debug,
+                phenomena=phenomena,
+                illumination=illumination,
             )
 
-    solar_azimuth = float(center_point_evaluation.features.get("solar_azimuth", math.nan))
+    source_azimuth = float(center_point_evaluation.features.get("source_azimuth", math.nan))
     center_source_names = tuple(source.name for source in center_point_evaluation.sources)
     phenomenon_evaluations: dict[str, PhenomenonTimeEvaluation] = {}
-    for phenomenon in PHENOMENA:
+    for phenomenon in phenomena:
         samples = samples_by_phenomenon[phenomenon]
         grid_evaluations = [
             point_evaluations[_point_key(sample.lat, sample.lon)]
@@ -501,7 +580,7 @@ def _evaluate_time_slot(
             raw_probabilities,
             samples,
             radius_km=radii_by_phenomenon[phenomenon],
-            solar_azimuth=solar_azimuth,
+            solar_azimuth=source_azimuth,
         )
         spatial_context = build_spatial_context(
             phenomenon,
@@ -540,13 +619,14 @@ def _samples_by_phenomenon(
     center_features: dict[str, float],
     spatial_resolution_km: float | None,
     lightweight: bool,
+    phenomena: tuple[str, ...],
 ) -> tuple[dict[str, list[SpatialSample]], dict[str, float]]:
     samples_by_phenomenon: dict[str, list[SpatialSample]] = {}
     radii_by_phenomenon: dict[str, float] = {}
     cloud_variability = _numeric_or_nan(center_features.get("cloud_variability"))
     wind_shear = _numeric_or_nan(center_features.get("wind_shear_250"))
     center_sample = [SpatialSample(lat=round(lat, 6), lon=round(lon, 6), dx_km=0.0, dy_km=0.0, distance_km=0.0)]
-    for phenomenon in PHENOMENA:
+    for phenomenon in phenomena:
         radius_km = adaptive_radius(radius_for(phenomenon), cloud_variability, wind_shear)
         radii_by_phenomenon[phenomenon] = radius_km
         if lightweight:
@@ -589,12 +669,15 @@ def _evaluate_point(
     predictors: dict[str, PredictionFunction],
     caches: PredictorCaches,
     include_debug: bool,
+    phenomena: tuple[str, ...],
+    illumination: str,
 ) -> PointEvaluation:
     cache_key = (
         round(lat, 4),
         round(lon, 4),
         mode,
         target_time.astimezone(timezone.utc).isoformat(),
+        illumination,
     )
     with caches.point_lock:
         cached_evaluation = caches.point_cache.get(cache_key)
@@ -616,10 +699,11 @@ def _evaluate_point(
         lon,
         weather=weather_snapshot.weather,
         prediction_time=target_time,
+        illumination=illumination,
     )
     probabilities: dict[str, float] = {}
     debug_components: dict[str, ModelComponents] = {}
-    for phenomenon in PHENOMENA:
+    for phenomenon in phenomena:
         predictor = predictors[phenomenon]
         probabilities[phenomenon] = predictor(features)
         if include_debug:
@@ -692,9 +776,13 @@ def _compute_features_for_time(
     *,
     weather: dict[str, object],
     prediction_time: datetime,
+    illumination: str,
 ) -> dict[str, float]:
     solar = get_solar_position(lat, lon, prediction_time)
-    return compute_features(weather, solar)
+    if illumination == "lunar":
+        lunar = get_lunar_position(lat, lon, prediction_time)
+        return compute_features(weather, lunar, illumination="lunar", solar=solar)
+    return compute_features(weather, solar, illumination="solar")
 
 
 def _time_window_label(hour_offset: int) -> str:
@@ -833,6 +921,10 @@ def _feature_quality(
         return 0.5 if math.isfinite(float(features.get("cloud_variability", math.nan))) else 0.0
     if feature_name in {"solar_elevation", "sun_visible", "sun_visibility"}:
         return 1.0 if math.isfinite(float(features.get("solar_elevation", math.nan))) else 0.0
+    if feature_name in {"source_elevation", "source_visible"}:
+        return 1.0 if math.isfinite(float(features.get("source_elevation", math.nan))) else 0.0
+    if feature_name in {"moon_elevation", "moon_phase", "moon_visible", "moon_illuminance", "sky_darkness", "brightness_factor"}:
+        return _feature_is_available(features.get(feature_name))
     if feature_name == "precipitation":
         return 1.0 if math.isfinite(_raw_nonnegative(weather.get("precipitation"))) else 0.0
     if feature_name == "surface_visibility":
@@ -884,7 +976,7 @@ def _compute_feature_stability(
 
 
 def _feature_perturbation_step(feature_name: str, value: float) -> float:
-    if feature_name == "solar_elevation":
+    if feature_name in {"solar_elevation", "source_elevation", "moon_elevation"}:
         return 2.0
     if feature_name == "precipitation":
         return max(0.1, value * 0.25)
@@ -910,6 +1002,12 @@ def _perturb_feature_value(feature_name: str, value: float, delta: float) -> flo
         "cloud_variability",
         "sun_visible",
         "sun_visibility",
+        "source_visible",
+        "brightness_factor",
+        "moon_phase",
+        "moon_visible",
+        "moon_illuminance",
+        "sky_darkness",
         "fog_presence",
     }:
         return _clamp_unit_interval(perturbed_value)
@@ -928,8 +1026,12 @@ def _numeric_or_nan(value: object) -> float:
 def _build_reason(phenomenon: str, features: dict[str, float], probability: float) -> str:
     if phenomenon == "halo":
         return _halo_reason(features)
+    if phenomenon == "lunar_halo":
+        return _lunar_halo_reason(features)
     if phenomenon == "parhelia":
         return _parhelia_reason(features)
+    if phenomenon == "paraselenae":
+        return _paraselenae_reason(features)
     if phenomenon == "cza":
         return _cza_reason(features)
     if phenomenon == "circumhorizontal_arc":
@@ -938,12 +1040,18 @@ def _build_reason(phenomenon: str, features: dict[str, float], probability: floa
         return _upper_tangent_arc_reason(features)
     if phenomenon == "sun_pillar":
         return _sun_pillar_reason(features)
+    if phenomenon == "lunar_pillar":
+        return _lunar_pillar_reason(features)
     if phenomenon == "crepuscular_rays":
         return _crepuscular_rays_reason(features)
     if phenomenon == "rainbow":
         return _rainbow_reason(features)
+    if phenomenon == "moonbow":
+        return _moonbow_reason(features)
     if phenomenon == "fogbow":
         return _fogbow_reason(features)
+    if phenomenon == "lunar_corona":
+        return _lunar_corona_reason(features)
     return f"Probability {probability:.3f} computed from physical, temporal, spatial, visibility, and geometry terms."
 
 
@@ -961,6 +1069,22 @@ def _parhelia_reason(features: dict[str, float]) -> str:
     if min(float(features.get("plate_alignment", 0.5)), float(features.get("wind_stability", 0.5))) < 0.5:
         return "Thin icy cirrus is present, but weak crystal alignment stability limits parhelia formation."
     return "Thin icy cirrus with aligned crystals and visible sun favors parhelia."
+
+
+def _lunar_halo_reason(features: dict[str, float]) -> str:
+    if _thin_icy_cirrus_available(features):
+        if _source_obscured(features):
+            return "Thin icy cirrus is present, but the moon is too dim or obscured for a strong lunar halo."
+        return "Thin icy cirrus with a bright visible moon supports lunar halo formation."
+    return "Lunar halo potential is limited by weak thin-cirrus or ice-presence support."
+
+
+def _paraselenae_reason(features: dict[str, float]) -> str:
+    if not _thin_icy_cirrus_available(features):
+        return "Paraselenae potential is limited by weak thin-cirrus or ice-presence support."
+    if min(float(features.get("plate_alignment", 0.5)), float(features.get("wind_stability", 0.5))) < 0.5:
+        return "Thin icy cirrus is present, but weak crystal alignment stability limits paraselenae formation."
+    return "Thin icy cirrus with aligned crystals and a bright visible moon favors paraselenae."
 
 
 def _cza_reason(features: dict[str, float]) -> str:
@@ -1000,6 +1124,18 @@ def _sun_pillar_reason(features: dict[str, float]) -> str:
     return "Near-horizon sun with ice-bearing thin cloud supports a sun pillar."
 
 
+def _lunar_pillar_reason(features: dict[str, float]) -> str:
+    if float(features.get("source_elevation", math.nan)) < -6.0:
+        return "The moon is too far below the horizon for a strong lunar pillar signal."
+    if float(features.get("source_elevation", math.nan)) > 14.0:
+        return "The moon is too high for a strong lunar pillar despite any ice support."
+    if _source_obscured(features):
+        return "Near-horizon geometry is favorable, but cloud thickness or weak moonlight limits the lunar-pillar signal."
+    if float(features.get("wind_stability", 0.5)) < 0.45:
+        return "Near-horizon geometry is favorable, but unstable upper-level flow weakens the lunar-pillar signal."
+    return "Near-horizon bright moon with ice-bearing thin cloud supports a lunar pillar."
+
+
 def _crepuscular_rays_reason(features: dict[str, float]) -> str:
     if _sun_obscured(features):
         return "Low-sun geometry may be favorable, but sunlight is too obscured for strong crepuscular rays."
@@ -1014,6 +1150,16 @@ def _rainbow_reason(features: dict[str, float]) -> str:
     if _sun_obscured(features):
         return "Precipitation is present, but direct sunlight is too limited for a strong rainbow."
     return "Rain with visible sun at moderate solar elevation favors rainbow formation."
+
+
+def _moonbow_reason(features: dict[str, float]) -> str:
+    if float(features.get("precipitation", 0.0)) <= 0.1:
+        return "Moonbow potential is limited by weak precipitation."
+    if float(features.get("moon_phase", 0.0)) < 0.5 or float(features.get("sky_darkness", 0.0)) < 0.4:
+        return "Precipitation is present, but the moon is not bright enough against the sky for a strong moonbow."
+    if _source_obscured(features):
+        return "Precipitation is present, but direct moonlight is too limited for a strong moonbow."
+    return "Rain with a bright moon and dark sky favors moonbow formation."
 
 
 def _fogbow_reason(features: dict[str, float]) -> str:
@@ -1032,6 +1178,16 @@ def _fogbow_reason(features: dict[str, float]) -> str:
     return "Fog or mist with visible sun and low visibility favors fogbow formation."
 
 
+def _lunar_corona_reason(features: dict[str, float]) -> str:
+    cloud_optical_thickness = float(features.get("cloud_optical_thickness", 0.0))
+    cloud_variability = float(features.get("cloud_variability", 0.3))
+    if _source_obscured(features):
+        return "Thin cloud may be present, but the moon is too dim or obscured for a strong lunar corona."
+    if 0.1 <= cloud_optical_thickness <= 0.6 and 0.1 <= cloud_variability <= 0.6:
+        return "Bright moonlight with thin fairly uniform cloud favors a lunar corona."
+    return "Cloud thickness or uniformity is outside the narrow lunar-corona sweet spot."
+
+
 def _thin_icy_cirrus_available(features: dict[str, float]) -> bool:
     return (
         float(features.get("thin_cirrus", 0.0)) >= 0.2
@@ -1042,6 +1198,14 @@ def _thin_icy_cirrus_available(features: dict[str, float]) -> bool:
 def _sun_obscured(features: dict[str, float]) -> bool:
     return (
         float(features.get("sun_visible", 0.0)) <= 0.15
+        or float(features.get("cloud_optical_thickness", 0.0)) >= 0.7
+    )
+
+
+def _source_obscured(features: dict[str, float]) -> bool:
+    return (
+        float(features.get("source_visible", features.get("sun_visible", 0.0))) <= 0.15
+        or float(features.get("brightness_factor", 1.0)) <= 0.15
         or float(features.get("cloud_optical_thickness", 0.0)) >= 0.7
     )
 

@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from core.predictor import predict_all
 
 WEATHER_MODES = ("forecast", "observed")
+ILLUMINATION_MODES = ("solar", "lunar")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=WEATHER_MODES,
         default="forecast",
         help="Weather input mode: forecast uses NOAA GFS, observed uses GOES cloud layers plus nearby METAR observations.",
+    )
+    parser.add_argument(
+        "--illumination",
+        choices=ILLUMINATION_MODES,
+        default="solar",
+        help="Illumination mode: solar predicts sunlit optics, lunar predicts moonlit optics.",
     )
     parser.add_argument(
         "--keep-downloaded-files",
@@ -77,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     predictor_kwargs: dict[str, object] = {
         "at_time": _parse_at_time(args.at_time),
         "mode": args.mode,
+        "illumination": args.illumination,
         "keep_downloaded_files": args.keep_downloaded_files or bool(args.download_dir),
         "download_dir": args.download_dir,
         "time_window_hours": _parse_time_window_hours(args.time_window_hours),
