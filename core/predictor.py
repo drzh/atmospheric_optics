@@ -263,6 +263,7 @@ def predict_all(
         "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
         "request": request_payload,
         "sources": [_source_payload(source) for source in center_snapshot.sources],
+        "celestial": _celestial_payload(time_slot_evaluations[0].phenomena),
         "phenomena": [],
     }
 
@@ -367,6 +368,30 @@ def _round_numeric_mapping(values: dict[str, float | str]) -> dict[str, float | 
         except (TypeError, ValueError):
             continue
     return rounded
+
+
+def _celestial_payload(
+    current_phenomena: dict[str, PhenomenonTimeEvaluation],
+) -> dict[str, dict[str, float]]:
+    if not current_phenomena:
+        return {}
+
+    sample_features = next(iter(current_phenomena.values())).reason_features
+    celestial: dict[str, dict[str, float]] = {}
+    sun_altitude = _finite_feature(sample_features, "solar_elevation")
+    moon_altitude = _finite_feature(sample_features, "moon_elevation")
+    if sun_altitude is not None:
+        celestial["sun"] = {"altitude": _round_output_float(sun_altitude)}
+    if moon_altitude is not None:
+        celestial["moon"] = {"altitude": _round_output_float(moon_altitude)}
+    return celestial
+
+
+def _finite_feature(features: dict[str, float], key: str) -> float | None:
+    value = _numeric_or_nan(features.get(key))
+    if not math.isfinite(value):
+        return None
+    return value
 
 
 def _normalize_time_window_hours(time_window_hours: Iterable[int] | None) -> tuple[int, ...]:

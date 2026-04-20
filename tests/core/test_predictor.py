@@ -61,7 +61,7 @@ def test_predict_all_returns_structured_payload() -> None:
         }
         for call in get_weather_mock.call_args_list
     )
-    assert set(result) == {"generated_at", "request", "sources", "phenomena"}
+    assert set(result) == {"generated_at", "request", "sources", "celestial", "phenomena"}
     assert result["generated_at"].endswith("Z")
     assert result["request"] == {
         "location": {"lat": 32.8, "lon": -96.8},
@@ -78,6 +78,9 @@ def test_predict_all_returns_structured_payload() -> None:
         {"id": "goes-east", "label": "GOES East", "kind": "satellite", "timestamp": "20260407 124617z"},
         {"id": "metar", "label": "METAR", "kind": "surface_observation", "timestamp": "20260407 1653z"},
     ]
+    assert result["celestial"] == {
+        "sun": {"altitude": 20.0},
+    }
 
     phenomena = _phenomena_by_id(result)
     assert tuple(phenomena) == PHENOMENA
@@ -262,6 +265,10 @@ def test_predict_all_supports_lunar_mode() -> None:
                 result = predict_all(32.8, -96.8, illumination="lunar", lightweight=True)
 
     assert result["request"]["options"]["illumination"] == "lunar"
+    assert result["celestial"] == {
+        "sun": {"altitude": -18.0},
+        "moon": {"altitude": 12.0},
+    }
     phenomena = _phenomena_by_id(result)
     assert tuple(phenomena) == (
         "lunar_halo",

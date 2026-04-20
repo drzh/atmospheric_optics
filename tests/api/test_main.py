@@ -75,6 +75,9 @@ def _sample_payload() -> dict[str, object]:
             {"id": "goes-east", "label": "GOES East", "kind": "satellite", "timestamp": "20260407 124617z"},
             {"id": "metar", "label": "METAR", "kind": "surface_observation", "timestamp": "20260407 1653z"},
         ],
+        "celestial": {
+            "sun": {"altitude": 20.0},
+        },
     }
 
 
@@ -122,6 +125,7 @@ def test_build_prediction_response_delegates_to_predictor(monkeypatch) -> None:
     assert result["phenomena"][0]["peak"]["probability"] == 0.25
     assert result["phenomena"][0]["current"]["spatial_context"]["aggregation"] == "weighted_blend"
     assert result["phenomena"][1]["current"]["reason"] == "fogbow reason"
+    assert result["celestial"]["sun"]["altitude"] == 20.0
     assert result["sources"] == [
         {"id": "goes-east", "label": "GOES East", "kind": "satellite", "timestamp": "20260407 124617z"},
         {"id": "metar", "label": "METAR", "kind": "surface_observation", "timestamp": "20260407 1653z"},
