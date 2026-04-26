@@ -107,7 +107,7 @@ python3 -m pip install requests numpy netCDF4 pyproj fastapi uvicorn pytest
 Run commands from the repo root:
 
 ```bash
-cd /home/celaeno/script/atmospheric_optics
+cd atmospheric_optics
 python3 cli/main.py --lat 32.8 --lon -96.8
 ```
 
@@ -146,7 +146,7 @@ Keep downloaded artifacts:
 
 ```bash
 python3 cli/main.py --lat 32.8 --lon -96.8 --mode observed --keep-downloaded-files
-python3 cli/main.py --lat 32.8 --lon -96.8 --mode forecast --download-dir /tmp/atmospheric-optics-cache
+python3 cli/main.py --lat 32.8 --lon -96.8 --mode forecast --download-dir data_cache/custom
 ```
 
 CLI options:
@@ -175,7 +175,7 @@ Cache behavior:
 - Forecast cache files are pruned to the active `time_window_hours` for the current request.
 - Observed-mode cached GOES and persisted observation files are pruned once they age out of the active time scale.
 - Transient GOES download folders are removed automatically when files are not being persisted.
-- In the sibling deployment, a daily cron maintenance job also prunes user-owned `/tmp` entries older than 3 days to keep scratch download directories from accumulating indefinitely.
+- In the sibling deployment, a daily cron maintenance job also prunes old user-owned scratch entries to keep temporary download directories from accumulating indefinitely.
 
 ## Output Format
 
@@ -592,7 +592,7 @@ Example `alerts.toml` target:
 [[sources]]
 name = "atmospheric_optics"
 provider = "atmospheric_optics"
-db_file = "/home/celaeno/alert/atmospheric_optics.db"
+db_file = "state/atmospheric_optics.db"
 
 [[sources.targets]]
 name = "Home"
@@ -603,7 +603,7 @@ lat = 32.847
 lon = -96.806
 mode = "observed"
 illumination = "solar"
-project_dir = "/home/celaeno/script/atmospheric_optics"
+project_dir = "../atmospheric_optics"
 phenomena = [
   "halo",
   "parhelia",
@@ -630,11 +630,12 @@ Notes:
 Web export example:
 
 ```bash
-python3 /home/celaeno/script/alert/export_atmospheric_optics_json.py \
-  --config /home/celaeno/script/alert/alerts.toml \
+cd ../alert
+python3 -m alert.exporters.atmospheric_optics_json \
+  --config alerts.toml \
   --source atmospheric_optics \
   --prediction-only \
-  --output /home/celaeno/web/astro/table/atmospheric_optics.json
+  --output ../../web/astro/table/atmospheric_optics.json
 ```
 
 ## Tests
