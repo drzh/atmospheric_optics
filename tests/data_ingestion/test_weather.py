@@ -453,6 +453,47 @@ def test_compose_observed_weather_uses_forecast_fallback_when_goes_missing() -> 
     }
 
 
+def test_get_observed_snapshot_keeps_metar_when_goes_and_gfs_are_unavailable() -> None:
+    metar_observation = weather.MetarObservation(
+        station_identifier="KDAL",
+        raw_record={"rawOb": "METAR KDAL 071653Z 15009KT 3SM -RA BKN250 19/02 A3019"},
+        precipitation=1.0,
+        high_cloud_cover=0.75,
+        timestamp="20260407 1653z",
+        surface_visibility=3.0,
+        fog_presence=0.0,
+    )
+
+    with patch.object(
+        weather,
+        "_request_nws_json",
+        side_effect=[
+            {"properties": {"observationStations": "https://example.test/stations"}},
+            {"features": [{"properties": {"stationIdentifier": "KDAL"}}]},
+        ],
+    ):
+        with patch.object(
+            weather,
+            "_select_best_metar_station",
+            return_value=({"properties": {"stationIdentifier": "KDAL"}}, metar_observation),
+        ):
+            with patch.object(weather, "_get_goes_observation", side_effect=RuntimeError("NetCDF: HDF error")):
+                with patch.object(
+                    weather,
+                    "_get_forecast_snapshot",
+                    side_effect=weather.WeatherDataUnavailable("NOAA over rate limit"),
+                ):
+                    snapshot = weather.get_weather_snapshot(32.8, -96.8, mode="observed")
+
+    assert snapshot.sources == (
+        weather.SourceAttribution(name="metar", timestamp="20260407 1653z"),
+    )
+    assert snapshot.weather["cloud_cover_high"] == pytest.approx(0.75)
+    assert snapshot.weather["precipitation"] == pytest.approx(1.0)
+    assert snapshot.weather["surface_visibility"] == pytest.approx(3.0)
+    assert math.isnan(snapshot.weather["temp_250"])
+
+
 def test_collect_observed_sources_reports_goes_and_metar() -> None:
     metar_observation = weather.MetarObservation(
         station_identifier="KDAL",

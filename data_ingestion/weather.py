@@ -147,6 +147,20 @@ class WeatherDataUnavailable(RuntimeError):
     """Raised when the required weather inputs cannot be loaded or parsed."""
 
 
+GOES_OBSERVATION_ERRORS = (
+    WeatherDataUnavailable,
+    requests.RequestException,
+    RuntimeError,
+    OSError,
+    ValueError,
+)
+FORECAST_FALLBACK_ERRORS = (
+    WeatherDataUnavailable,
+    requests.RequestException,
+    ValueError,
+)
+
+
 def get_weather(
     lat: float,
     lon: float,
@@ -364,7 +378,7 @@ def _get_observed_snapshot(
             lon,
             download_dir=resolved_download_dir,
         )
-    except (WeatherDataUnavailable, requests.RequestException, ValueError) as exc:
+    except GOES_OBSERVATION_ERRORS as exc:
         LOGGER.warning(
             "Unable to load GOES observations for lat=%s lon=%s: %s",
             lat,
@@ -379,8 +393,18 @@ def _get_observed_snapshot(
             timestamp="",
         )
 
+    forecast_fallback: WeatherSnapshot | None = None
     try:
         forecast_fallback = _get_forecast_snapshot(lat, lon, at_time=at_time)
+    except FORECAST_FALLBACK_ERRORS as exc:
+        LOGGER.warning(
+            "Unable to load GFS fallback for observed weather at lat=%s lon=%s: %s",
+            lat,
+            lon,
+            exc,
+        )
+
+    try:
         weather = _compose_observed_weather(
             metar_observation=metar_observation,
             goes_observation=goes_observation,
