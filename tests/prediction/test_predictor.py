@@ -42,14 +42,18 @@ def test_predict_all_returns_structured_payload() -> None:
                 "azimuth": 180.0,
             },
         ):
-            result = predict_all(
-                32.8,
-                -96.8,
-                at_time=datetime(2026, 4, 7, 18, 0, tzinfo=timezone.utc),
-                mode="observed",
-                keep_downloaded_files=True,
-                download_dir="/tmp/noaa-gfs-cache",
-            )
+            with patch(
+                "prediction.pipeline.get_lunar_position",
+                return_value={"elevation": 12.0, "azimuth": 140.0, "phase": 0.9, "illuminance": 0.8},
+            ):
+                result = predict_all(
+                    32.8,
+                    -96.8,
+                    at_time=datetime(2026, 4, 7, 18, 0, tzinfo=timezone.utc),
+                    mode="observed",
+                    keep_downloaded_files=True,
+                    download_dir="/tmp/noaa-gfs-cache",
+                )
 
     assert any(
         call.args == (32.8, -96.8)
@@ -78,7 +82,7 @@ def test_predict_all_returns_structured_payload() -> None:
         "options": {
             "lightweight": False,
             "debug": False,
-            "illumination": "solar",
+            "illumination": "solar,lunar",
         },
     }
     assert result["sources"] == [
@@ -91,6 +95,7 @@ def test_predict_all_returns_structured_payload() -> None:
     assert result["clouds"]["cloud_layers"][0]["wmo_code"] == "Cs"
     assert result["celestial"] == {
         "sun": {"altitude": 20.0},
+        "moon": {"altitude": 12.0},
     }
 
     phenomena = _phenomena_by_id(result)
@@ -149,7 +154,11 @@ def test_predict_all_passes_mode_to_weather_layer() -> None:
                 "azimuth": 180.0,
             },
         ):
-            predict_all(32.8, -96.8, mode="observed")
+            with patch(
+                "prediction.pipeline.get_lunar_position",
+                return_value={"elevation": 12.0, "azimuth": 140.0, "phase": 0.9, "illuminance": 0.8},
+            ):
+                predict_all(32.8, -96.8, mode="observed")
 
     assert get_weather_mock.call_count >= 1
     assert all(call.kwargs["mode"] == "observed" for call in get_weather_mock.call_args_list)
@@ -200,7 +209,7 @@ def test_predict_all_supports_selected_phenomena_and_debug_payloads() -> None:
     assert result["request"]["options"] == {
         "lightweight": True,
         "debug": True,
-        "illumination": "solar",
+        "illumination": "solar,lunar",
         "phenomena": ["halo", "rainbow"],
     }
     phenomena = _phenomena_by_id(result)
@@ -226,7 +235,11 @@ def test_predict_all_supports_lightweight_mode() -> None:
             "prediction.pipeline.get_solar_position",
             return_value={"elevation": 20.0, "azimuth": 180.0},
         ):
-            result = predict_all(32.8, -96.8, lightweight=True, mode="observed")
+            with patch(
+                "prediction.pipeline.get_lunar_position",
+                return_value={"elevation": 12.0, "azimuth": 140.0, "phase": 0.9, "illuminance": 0.8},
+            ):
+                result = predict_all(32.8, -96.8, lightweight=True, mode="observed")
 
     halo = _phenomena_by_id(result)["halo"]
     assert halo["current"]["spatial_context"]["center_probability"] == halo["current"]["spatial_context"]["max_probability"]
@@ -245,7 +258,11 @@ def test_predict_all_ignores_time_slots_beyond_three_hours() -> None:
             "prediction.pipeline.get_solar_position",
             return_value={"elevation": 20.0, "azimuth": 180.0},
         ):
-            result = predict_all(32.8, -96.8, time_window_hours=(0, 1, 3, 6, 12))
+            with patch(
+                "prediction.pipeline.get_lunar_position",
+                return_value={"elevation": 12.0, "azimuth": 140.0, "phase": 0.9, "illuminance": 0.8},
+            ):
+                result = predict_all(32.8, -96.8, time_window_hours=(0, 1, 3, 6, 12))
 
     assert result["request"]["time_window_hours"] == [0, 1, 3]
     halo_timeline = _phenomena_by_id(result)["halo"]["timeline"]

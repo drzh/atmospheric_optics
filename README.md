@@ -8,11 +8,12 @@ The current implementation combines:
 - solar and lunar position calculation
 - derived feature engineering with multi-layer ice support and wind stability
 - smooth quantitative probability models with weighted log combination
+- deterministic WMO cloud classification from GOES and METAR observations
 - adaptive km-based spatial sampling with distance and directional weighting
 - asymmetric peak-preserving temporal smoothing across the output timeline
 - CLI and HTTP API entry points
 
-Predictions are returned as a top-level object with `generated_at`, `request`, `sources`, and `phenomena`. Each phenomenon entry contains nested `current`, `peak`, and `timeline` objects so the format can grow cleanly as new phenomena, data sources, and supporting metadata are added. Numeric values are rounded to 3 decimal places where applicable, and source timestamps are emitted in UTC. When requested, the payload also includes per-phenomenon `debug` terms for the physical (`P`), visibility (`V`), and geometry (`G`) components.
+Predictions are returned as a top-level object with `generated_at`, `request`, `sources`, `clouds`, `celestial`, and `phenomena`. Each phenomenon entry contains nested `current`, `peak`, and `timeline` objects so the format can grow cleanly as new phenomena, data sources, cloud layers, and supporting metadata are added. Numeric values are rounded to 3 decimal places where applicable, and source timestamps are emitted in UTC. When requested, the payload also includes per-phenomenon `debug` terms for the physical (`P`), visibility (`V`), and geometry (`G`) components.
 
 ## Supported Phenomena
 
@@ -47,20 +48,25 @@ Lunar mode:
 ## Project Layout
 
 ```text
-data_ingestion -> feature_engineering -> models -> core -> cli/api
+weather_sources -> features -> (clouds + astronomy + optics_models) -> prediction -> cli/api
 ```
 
 Key modules:
 
-- `data_ingestion/weather.py`: GFS, GOES, METAR, and source attribution
-- `feature_engineering/features.py`: normalized and derived model inputs
-- `feature_engineering/cirrus.py`: thin-cirrus and ice-presence features
-- `feature_engineering/dynamics.py`: plate-alignment and cloud-variability features
-- `models/`: quantitative probability models
-- `models/combine.py`: weighted log combination helper
-- `core/predictor.py`: end-to-end orchestration and output shaping
-- `cli/main.py`: command-line interface
-- `api/main.py`: HTTP API
+- `weather_sources/snapshots.py`: GFS, GOES, METAR, cache cleanup, and source attribution
+- `features/extraction.py`: normalized and derived model inputs
+- `features/ice_clouds.py`: thin-cirrus and ice-presence features
+- `features/cloud_dynamics.py`: plate-alignment and cloud-variability features
+- `clouds/`: deterministic WMO cloud classification
+- `optics_models/`: quantitative optical-phenomenon probability models
+- `optics_models/combination.py`: weighted log combination helper
+- `astronomy/`: solar and lunar position helpers
+- `interfaces/parameters.py`: shared CLI/API parameter parsing
+- `prediction/pipeline.py`: end-to-end orchestration and output shaping
+- `prediction/spatial_sampling.py`: adaptive nearby-grid sampling
+- `prediction/temporal_smoothing.py`: timeline smoothing and peak selection
+- `cli/command.py`: command-line interface
+- `api/server.py`: HTTP API
 
 ## Requirements
 
@@ -108,7 +114,7 @@ Run commands from the repo root:
 
 ```bash
 cd atmospheric_optics
-python3 cli/main.py --lat 32.8 --lon -96.8
+python3 cli/command.py --lat 32.8 --lon -96.8
 ```
 
 Important:
@@ -118,35 +124,36 @@ Important:
 
 ## CLI Usage
 
-Default forecast mode:
+Default forecast mode, including both solar and lunar phenomena in one payload:
 
 ```bash
-python3 cli/main.py --lat 32.8 --lon -96.8
+python3 cli/command.py --lat 32.8 --lon -96.8
 ```
 
-Lunar mode:
+Solar-only or lunar-only mode:
 
 ```bash
-python3 cli/main.py --lat 32.8 --lon -96.8 --illumination lunar
+python3 cli/command.py --lat 32.8 --lon -96.8 --illumination solar
+python3 cli/command.py --lat 32.8 --lon -96.8 --illumination lunar
 ```
 
 Explicit forecast mode:
 
 ```bash
-python3 cli/main.py --lat 32.8 --lon -96.8 --mode forecast
+python3 cli/command.py --lat 32.8 --lon -96.8 --mode forecast
 ```
 
 Observed mode:
 
 ```bash
-python3 cli/main.py --lat 32.8 --lon -96.8 --mode observed
+python3 cli/command.py --lat 32.8 --lon -96.8 --mode observed
 ```
 
 Keep downloaded artifacts:
 
 ```bash
-python3 cli/main.py --lat 32.8 --lon -96.8 --mode observed --keep-downloaded-files
-python3 cli/main.py --lat 32.8 --lon -96.8 --mode forecast --download-dir data_cache/custom
+python3 cli/command.py --lat 32.8 --lon -96.8 --mode observed --keep-downloaded-files
+python3 cli/command.py --lat 32.8 --lon -96.8 --mode forecast --download-dir data_cache/custom
 ```
 
 CLI options:
@@ -154,7 +161,7 @@ CLI options:
 - `--lat`: latitude in decimal degrees
 - `--lon`: longitude in decimal degrees
 - `--mode`: `forecast` or `observed`
-- `--illumination`: `solar` or `lunar`
+- `--illumination`: `solar`, `lunar`, or `solar,lunar`; defaults to `solar,lunar`
 - `--at-time`: optional ISO 8601 prediction time
 - `--time-window-hours`: optional comma-separated horizon offsets such as `0,1,2,3`
 - `--phenomena`: optional comma-separated subset such as `halo,fogbow`
@@ -195,7 +202,7 @@ The predictor returns one JSON object per request:
     "options": {
       "lightweight": false,
       "debug": false,
-      "illumination": "solar",
+      "illumination": "solar,lunar",
       "phenomena": ["halo", "fogbow"]
     }
   },
@@ -207,6 +214,19 @@ The predictor returns one JSON object per request:
       "timestamp": "20260407 12z f006"
     }
   ],
+  "clouds": {
+    "schema_version": "1.0",
+    "sources": {
+      "goes": false,
+      "metar": false
+    },
+    "cloud_layers": []
+  },
+  "celestial": {
+    "sun": {
+      "altitude": 20.0
+    }
+  },
   "phenomena": [
     {
       "id": "halo",
@@ -297,7 +317,16 @@ Top-level fields:
 - `generated_at`: UTC timestamp for when the predictor finished building the payload.
 - `request`: normalized request metadata, including the resolved location, mode, illumination, prediction time, requested horizon, and runtime options.
 - `sources`: list of source objects used for the prediction. Each source has `id`, `label`, `kind`, and `timestamp`.
+- `clouds`: WMO cloud classification payload with `schema_version`, source booleans, and zero or more independent `cloud_layers`.
+- `celestial`: active solar and/or lunar altitude metadata used by the geometry models.
 - `phenomena`: list of per-phenomenon result objects. A list is used instead of top-level keyed fields so the format can grow without changing the surrounding envelope.
+
+Each `clouds.cloud_layers` entry contains:
+
+- `layer_id`, `wmo_genus`, `wmo_code`, and `altitude_category`
+- `coverage`, `cloud_base_m`, and `cloud_top_m`
+- `confidence`
+- `evidence`, with the METAR and GOES observations used by the deterministic classifier
 
 Each phenomenon entry contains:
 
@@ -359,7 +388,7 @@ Practical guidance:
 If `fastapi` is not installed, the repo includes a standard-library WSGI server:
 
 ```bash
-python3 api/main.py
+python3 api/server.py
 ```
 
 Then request:
@@ -371,7 +400,7 @@ curl "http://127.0.0.1:8000/predict?lat=32.8&lon=-96.8&mode=forecast"
 Optional API query parameters:
 
 - `at_time=2026-04-13T18:00:00Z`
-- `illumination=lunar`
+- `illumination=solar`, `illumination=lunar`, or `illumination=solar,lunar`
 - `time_window_hours=0,1,2,3`
 - `phenomena=halo,fogbow`
 - `spatial_resolution_km=10`
@@ -381,7 +410,7 @@ Optional API query parameters:
 If `fastapi` and `uvicorn` are installed, run:
 
 ```bash
-uvicorn api.main:app --reload
+uvicorn api.server:app --reload
 ```
 
 ## Data Source Behavior
@@ -414,7 +443,7 @@ Fallback behavior:
 
 ## Model Summary
 
-The implementation uses quantitative rule-based models in `models/`.
+The implementation uses quantitative rule-based models in `optics_models/`.
 
 Each probability is built from three smooth components:
 
@@ -602,7 +631,7 @@ timeout_seconds = 180
 lat = 32.847
 lon = -96.806
 mode = "observed"
-illumination = "solar"
+illumination = "solar,lunar"
 project_dir = "../atmospheric_optics"
 phenomena = [
   "halo",
@@ -614,6 +643,11 @@ phenomena = [
   "crepuscular_rays",
   "rainbow",
   "fogbow",
+  "lunar_halo",
+  "paraselenae",
+  "lunar_pillar",
+  "lunar_corona",
+  "moonbow",
 ]
 ```
 
@@ -622,7 +656,7 @@ Notes:
 - `threshold` is applied to each phenomenon's `peak.probability`.
 - `timeout_seconds` can be raised for observed-mode targets so GOES and METAR ingestion have enough time to complete in cron jobs.
 - If `phenomena` is omitted, the alert provider defaults to all supported phenomena.
-- `illumination` is optional and defaults to `solar`; set it to `lunar` to run the moonlit phenomenon set.
+- `illumination` is optional and defaults to `solar,lunar`; set it to `solar` or `lunar` to run only one illumination set.
 - Optional target options `at_time` and `time_window_hours` are passed through to the CLI.
 - Alert items use the phenomenon object's `peak.probability`, `peak.time`, and `current.reason`.
 - Exported JSON preserves the nested per-phenomenon structure, including `spatial_context`, instead of flattening it.
@@ -634,8 +668,9 @@ cd ../alert
 python3 -m alert.exporters.atmospheric_optics_json \
   --config alerts.toml \
   --source atmospheric_optics \
+  --target-name Home \
   --prediction-only \
-  --output ../../web/astro/table/atmospheric_optics.json
+  --output ../../web/astro/table/data/atmospheric_optics.json
 ```
 
 ## Tests

@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from interfaces.parameters import (
+    DEFAULT_ILLUMINATION,
     ILLUMINATION_MODES,
     WEATHER_MODES,
     normalize_illumination,
@@ -39,7 +40,7 @@ def build_prediction_response(
     lat: float,
     lon: float,
     mode: str = "forecast",
-    illumination: str = "solar",
+    illumination: str = DEFAULT_ILLUMINATION,
     at_time: str | None = None,
     time_window_hours: str | None = None,
     phenomena: str | None = None,
@@ -76,7 +77,7 @@ if FASTAPI_AVAILABLE:
         lat: float,
         lon: float,
         mode: str = "forecast",
-        illumination: str = "solar",
+        illumination: str = DEFAULT_ILLUMINATION,
         at_time: str | None = None,
         time_window_hours: str | None = None,
         phenomena: str | None = None,
@@ -154,7 +155,7 @@ else:
     def _optional_illumination(query: dict[str, list[str]]) -> str:
         values = query.get("illumination")
         if not values or not values[0].strip():
-            return "solar"
+            return DEFAULT_ILLUMINATION
 
         return normalize_illumination(values[0])
 

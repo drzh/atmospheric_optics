@@ -13,8 +13,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from interfaces.parameters import (
+    DEFAULT_ILLUMINATION,
     ILLUMINATION_MODES,
     WEATHER_MODES,
+    normalize_illumination,
     parse_at_time,
     parse_csv_values,
     parse_time_window_hours,
@@ -34,9 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--illumination",
-        choices=ILLUMINATION_MODES,
-        default="solar",
-        help="Illumination mode: solar predicts sunlit optics, lunar predicts moonlit optics.",
+        default=DEFAULT_ILLUMINATION,
+        help=(
+            "Comma-separated illumination modes. "
+            f"Use {', '.join(ILLUMINATION_MODES)} or {DEFAULT_ILLUMINATION}."
+        ),
     )
     parser.add_argument(
         "--keep-downloaded-files",
@@ -87,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     predictor_kwargs: dict[str, object] = {
         "at_time": parse_at_time(args.at_time),
         "mode": args.mode,
-        "illumination": args.illumination,
+        "illumination": normalize_illumination(args.illumination),
         "keep_downloaded_files": args.keep_downloaded_files or bool(args.download_dir),
         "download_dir": args.download_dir,
         "time_window_hours": parse_time_window_hours(args.time_window_hours),

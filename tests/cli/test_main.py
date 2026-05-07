@@ -23,7 +23,7 @@ def test_cli_main_prints_prediction_json(capsys, monkeypatch) -> None:
                 "options": {
                     "lightweight": False,
                     "debug": False,
-                    "illumination": "solar",
+                    "illumination": "solar,lunar",
                     "phenomena": ["halo", "fogbow"],
                 },
             },
@@ -110,7 +110,7 @@ def test_cli_main_prints_prediction_json(capsys, monkeypatch) -> None:
         "lon": -96.0,
         "at_time": datetime(2026, 4, 13, 18, 0, tzinfo=timezone.utc),
         "mode": "observed",
-        "illumination": "solar",
+        "illumination": "solar,lunar",
         "keep_downloaded_files": True,
         "download_dir": "/tmp/noaa-gfs-cache",
         "time_window_hours": (0, 1, 3),

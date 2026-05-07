@@ -54,6 +54,8 @@ MAX_TIME_WINDOW_HOURS = 3
 TIME_WINDOW_HOURS: tuple[int, ...] = (0, 1, 2, 3)
 PredictionFunction = Callable[[dict[str, float]], float]
 PointKey = tuple[float, float]
+ILLUMINATION_MODES: tuple[str, ...] = ("solar", "lunar")
+DEFAULT_ILLUMINATION = "solar,lunar"
 SOLAR_PHENOMENA: tuple[str, ...] = (
     "halo",
     "parhelia",
@@ -72,8 +74,8 @@ LUNAR_PHENOMENA: tuple[str, ...] = (
     "lunar_corona",
     "moonbow",
 )
-PHENOMENA: tuple[str, ...] = SOLAR_PHENOMENA
 SUPPORTED_PHENOMENA: tuple[str, ...] = SOLAR_PHENOMENA + LUNAR_PHENOMENA
+PHENOMENA: tuple[str, ...] = SUPPORTED_PHENOMENA
 PHENOMENON_METADATA: dict[str, dict[str, str]] = {
     "halo": {"label": "Halo", "category": "ice_crystal"},
     "parhelia": {"label": "Parhelia", "category": "ice_crystal"},
@@ -198,7 +200,7 @@ def predict_all(
     lightweight: bool = False,
     debug: bool = False,
     phenomena: Iterable[str] | None = None,
-    illumination: str = "solar",
+    illumination: str = DEFAULT_ILLUMINATION,
 ) -> dict[str, object]:
     """Predict all supported atmospheric optics probabilities."""
 
@@ -206,11 +208,96 @@ def predict_all(
     prediction_time = _resolve_prediction_time(at_time)
     resolved_time_window_hours = _normalize_time_window_hours(time_window_hours)
     resolved_spatial_resolution_km = _normalize_spatial_resolution_km(spatial_resolution_km)
-    resolved_illumination = _normalize_illumination(illumination)
-    active_phenomena = _phenomena_for_illumination(resolved_illumination)
+    resolved_illuminations = _normalize_illuminations(illumination)
+    active_phenomena = _phenomena_for_illuminations(resolved_illuminations)
     selected_phenomena = _normalize_selected_phenomena(phenomena, active_phenomena)
     predictors = _prediction_functions()
     caches = PredictorCaches()
+    payloads: list[dict[str, object]] = []
+    for resolved_illumination in resolved_illuminations:
+        illumination_phenomena = _phenomena_for_illumination(resolved_illumination)
+        selected_for_illumination = tuple(
+            phenomenon
+            for phenomenon in selected_phenomena
+            if phenomenon in illumination_phenomena
+        )
+        if not selected_for_illumination:
+            continue
+        payloads.append(
+            _predict_for_illumination(
+                lat,
+                lon,
+                generated_at=generated_at,
+                prediction_time=prediction_time,
+                mode=mode,
+                keep_downloaded_files=keep_downloaded_files,
+                download_dir=download_dir,
+                resolved_time_window_hours=resolved_time_window_hours,
+                resolved_spatial_resolution_km=resolved_spatial_resolution_km,
+                lightweight=lightweight,
+                debug=debug,
+                active_phenomena=illumination_phenomena,
+                selected_phenomena=selected_for_illumination,
+                illumination=resolved_illumination,
+                predictors=predictors,
+                caches=caches,
+            )
+        )
+
+    if len(payloads) == 1 and len(resolved_illuminations) == 1:
+        result = payloads[0]
+    else:
+        request_payload = _request_payload(
+            lat,
+            lon,
+            mode=mode,
+            prediction_time=prediction_time,
+            time_window_hours=resolved_time_window_hours,
+            spatial_resolution_km=resolved_spatial_resolution_km,
+            lightweight=lightweight,
+            debug=debug,
+            illumination=_illumination_label(resolved_illuminations),
+            active_phenomena=active_phenomena,
+            selected_phenomena=selected_phenomena,
+        )
+        result = _combine_illumination_payloads(
+            payloads,
+            generated_at=generated_at,
+            request_payload=request_payload,
+        )
+
+    cleanup_cached_artifacts(
+        lat=lat,
+        lon=lon,
+        mode=mode,
+        keep_downloaded_files=keep_downloaded_files,
+        download_dir=download_dir,
+        prediction_time=prediction_time,
+        time_window_hours=resolved_time_window_hours,
+    )
+
+    return result
+
+
+def _predict_for_illumination(
+    lat: float,
+    lon: float,
+    *,
+    generated_at: datetime,
+    prediction_time: datetime,
+    mode: str,
+    keep_downloaded_files: bool,
+    download_dir: str | Path | None,
+    resolved_time_window_hours: tuple[int, ...],
+    resolved_spatial_resolution_km: float | None,
+    lightweight: bool,
+    debug: bool,
+    active_phenomena: tuple[str, ...],
+    selected_phenomena: tuple[str, ...],
+    illumination: str,
+    predictors: dict[str, PredictionFunction],
+    caches: PredictorCaches,
+) -> dict[str, object]:
     center_snapshot = _load_weather_snapshot(
         lat,
         lon,
@@ -237,28 +324,23 @@ def predict_all(
             lightweight=lightweight,
             include_debug=debug,
             phenomena=selected_phenomena,
-            illumination=resolved_illumination,
+            illumination=illumination,
         )
         for hour_offset in resolved_time_window_hours
     ]
-    request_payload: dict[str, object] = {
-        "location": {
-            "lat": _round_output_float(lat),
-            "lon": _round_output_float(lon),
-        },
-        "mode": mode,
-        "prediction_time": prediction_time.isoformat().replace("+00:00", "Z"),
-        "time_window_hours": list(resolved_time_window_hours),
-        "options": {
-            "lightweight": bool(lightweight),
-            "debug": bool(debug),
-            "illumination": resolved_illumination,
-        },
-    }
-    if resolved_spatial_resolution_km is not None:
-        request_payload["options"]["spatial_resolution_km"] = _round_output_float(resolved_spatial_resolution_km)
-    if tuple(selected_phenomena) != active_phenomena:
-        request_payload["options"]["phenomena"] = list(selected_phenomena)
+    request_payload = _request_payload(
+        lat,
+        lon,
+        mode=mode,
+        prediction_time=prediction_time,
+        time_window_hours=resolved_time_window_hours,
+        spatial_resolution_km=resolved_spatial_resolution_km,
+        lightweight=lightweight,
+        debug=debug,
+        illumination=illumination,
+        active_phenomena=active_phenomena,
+        selected_phenomena=selected_phenomena,
+    )
 
     result: dict[str, object] = {
         "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
@@ -338,17 +420,86 @@ def predict_all(
             }
         )
 
-    cleanup_cached_artifacts(
-        lat=lat,
-        lon=lon,
-        mode=mode,
-        keep_downloaded_files=keep_downloaded_files,
-        download_dir=download_dir,
-        prediction_time=prediction_time,
-        time_window_hours=resolved_time_window_hours,
-    )
-
     return result
+
+
+def _request_payload(
+    lat: float,
+    lon: float,
+    *,
+    mode: str,
+    prediction_time: datetime,
+    time_window_hours: tuple[int, ...],
+    spatial_resolution_km: float | None,
+    lightweight: bool,
+    debug: bool,
+    illumination: str,
+    active_phenomena: tuple[str, ...],
+    selected_phenomena: tuple[str, ...],
+) -> dict[str, object]:
+    request_payload: dict[str, object] = {
+        "location": {
+            "lat": _round_output_float(lat),
+            "lon": _round_output_float(lon),
+        },
+        "mode": mode,
+        "prediction_time": prediction_time.isoformat().replace("+00:00", "Z"),
+        "time_window_hours": list(time_window_hours),
+        "options": {
+            "lightweight": bool(lightweight),
+            "debug": bool(debug),
+            "illumination": illumination,
+        },
+    }
+    options = request_payload["options"]
+    if isinstance(options, dict):
+        if spatial_resolution_km is not None:
+            options["spatial_resolution_km"] = _round_output_float(spatial_resolution_km)
+        if tuple(selected_phenomena) != active_phenomena:
+            options["phenomena"] = list(selected_phenomena)
+    return request_payload
+
+
+def _combine_illumination_payloads(
+    payloads: list[dict[str, object]],
+    *,
+    generated_at: datetime,
+    request_payload: dict[str, object],
+) -> dict[str, object]:
+    phenomena: list[dict[str, object]] = []
+    celestial: dict[str, object] = {}
+    clouds: dict[str, object] = {}
+    sources: list[dict[str, object]] = []
+    seen_sources: set[tuple[object, object]] = set()
+    for payload in payloads:
+        if not clouds and isinstance(payload.get("clouds"), dict):
+            clouds = dict(payload["clouds"])  # type: ignore[arg-type]
+        payload_celestial = payload.get("celestial")
+        if isinstance(payload_celestial, dict):
+            celestial.update(payload_celestial)
+        payload_phenomena = payload.get("phenomena")
+        if isinstance(payload_phenomena, list):
+            phenomena.extend(entry for entry in payload_phenomena if isinstance(entry, dict))
+        payload_sources = payload.get("sources")
+        if not isinstance(payload_sources, list):
+            continue
+        for source in payload_sources:
+            if not isinstance(source, dict):
+                continue
+            key = (source.get("id"), source.get("timestamp"))
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+            sources.append(dict(source))
+
+    return {
+        "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+        "request": request_payload,
+        "sources": sources,
+        "clouds": clouds,
+        "celestial": celestial,
+        "phenomena": phenomena,
+    }
 
 
 def _resolve_prediction_time(at_time: datetime | None) -> datetime:
@@ -450,17 +601,44 @@ def _prediction_functions() -> dict[str, PredictionFunction]:
     }
 
 
-def _normalize_illumination(illumination: str) -> str:
+def _normalize_illuminations(illumination: str) -> tuple[str, ...]:
     normalized = str(illumination).strip().lower()
-    if normalized in {"", "solar"}:
-        return "solar"
-    if normalized == "lunar":
-        return "lunar"
-    raise ValueError(f"Unsupported illumination: {illumination}")
+    if normalized == "":
+        return ILLUMINATION_MODES
+
+    illuminations: list[str] = []
+    invalid: list[str] = []
+    for part in normalized.split(","):
+        mode = part.strip()
+        if not mode:
+            continue
+        if mode not in ILLUMINATION_MODES:
+            invalid.append(mode)
+            continue
+        if mode not in illuminations:
+            illuminations.append(mode)
+    if invalid:
+        raise ValueError(f"Unsupported illumination: {illumination}")
+    if not illuminations:
+        return ILLUMINATION_MODES
+    return tuple(illuminations)
+
+
+def _illumination_label(illuminations: tuple[str, ...]) -> str:
+    return ",".join(illuminations)
 
 
 def _phenomena_for_illumination(illumination: str) -> tuple[str, ...]:
     return LUNAR_PHENOMENA if illumination == "lunar" else SOLAR_PHENOMENA
+
+
+def _phenomena_for_illuminations(illuminations: tuple[str, ...]) -> tuple[str, ...]:
+    phenomena: list[str] = []
+    for illumination in illuminations:
+        for phenomenon in _phenomena_for_illumination(illumination):
+            if phenomenon not in phenomena:
+                phenomena.append(phenomenon)
+    return tuple(phenomena)
 
 
 def _normalize_selected_phenomena(
