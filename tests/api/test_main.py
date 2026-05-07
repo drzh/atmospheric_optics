@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-import api.main as api_main
+import api.server as api_main
 
 
 def _sample_payload() -> dict[str, object]:

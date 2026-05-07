@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from cli.main import main
+from cli.command import main
 
 
 def test_cli_main_prints_prediction_json(capsys, monkeypatch) -> None:
@@ -81,7 +81,7 @@ def test_cli_main_prints_prediction_json(capsys, monkeypatch) -> None:
             ],
         }
 
-    monkeypatch.setattr("cli.main.predict_all", fake_predict_all)
+    monkeypatch.setattr("cli.command.predict_all", fake_predict_all)
 
     exit_code = main(
         [
