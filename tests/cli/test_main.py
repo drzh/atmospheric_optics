@@ -124,3 +124,51 @@ def test_cli_main_prints_prediction_json(capsys, monkeypatch) -> None:
         {"id": "goes-east", "kind": "satellite", "label": "GOES East", "timestamp": "20260407 124617z"},
         {"id": "metar", "kind": "surface_observation", "label": "METAR", "timestamp": "20260407 1653z"},
     ]
+
+
+def test_cli_main_prints_multi_location_prediction_json(capsys, monkeypatch) -> None:
+    calls: list[tuple[float, float, dict[str, object]]] = []
+
+    def fake_predict_all(lat: float, lon: float, **kwargs: object) -> dict[str, object]:
+        calls.append((lat, lon, dict(kwargs)))
+        return {
+            "generated_at": "2026-04-13T17:00:00Z",
+            "request": {
+                "location": {"lat": lat, "lon": lon},
+                "mode": kwargs["mode"],
+                "prediction_time": "2026-04-13T18:00:00Z",
+                "time_window_hours": [0, 1, 2, 3],
+                "options": {
+                    "lightweight": False,
+                    "debug": False,
+                    "illumination": kwargs["illumination"],
+                },
+            },
+            "phenomena": [],
+            "sources": [],
+        }
+
+    monkeypatch.setattr("cli.command.predict_all", fake_predict_all)
+
+    exit_code = main(
+        [
+            "--lat",
+            "32.847,30.46",
+            "--lon=-96.806,-97.80",
+            "--site",
+            "Dallas,Austin",
+            "--mode",
+            "observed",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert [(lat, lon) for lat, lon, _kwargs in calls] == [(32.847, -96.806), (30.46, -97.8)]
+    assert output["request"]["locations"] == [
+        {"lat": 32.847, "lon": -96.806, "site": "Dallas"},
+        {"lat": 30.46, "lon": -97.8, "site": "Austin"},
+    ]
+    assert [entry["site"] for entry in output["locations"]] == ["Dallas", "Austin"]
+    assert output["locations"][0]["prediction"]["request"]["location"]["site"] == "Dallas"
+    assert output["locations"][1]["prediction"]["request"]["location"]["site"] == "Austin"

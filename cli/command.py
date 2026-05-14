@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -26,8 +27,26 @@ from prediction.pipeline import predict_all
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Predict atmospheric optical phenomena.")
-    parser.add_argument("--lat", type=float, required=True, help="Latitude in decimal degrees.")
-    parser.add_argument("--lon", type=float, required=True, help="Longitude in decimal degrees.")
+    parser.add_argument(
+        "--lat",
+        action="append",
+        required=True,
+        help="Latitude in decimal degrees. Repeat the option or use comma-separated values for multiple locations.",
+    )
+    parser.add_argument(
+        "--lon",
+        action="append",
+        required=True,
+        help=(
+            "Longitude in decimal degrees. Repeat the option or use comma-separated values for multiple locations. "
+            "Use --lon=-96.8,-97.8 for comma-separated negative longitudes."
+        ),
+    )
+    parser.add_argument(
+        "--site",
+        action="append",
+        help="Optional site names matching --lat/--lon. Repeat the option or use comma-separated values. Defaults to NA.",
+    )
     parser.add_argument(
         "--mode",
         choices=WEATHER_MODES,
@@ -85,8 +104,142 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _flatten_csv_values(values: list[str] | None) -> tuple[str, ...]:
+    if values is None:
+        return ()
+
+    flattened: list[str] = []
+    for value in values:
+        parsed_values = parse_csv_values(value)
+        if parsed_values is None:
+            continue
+        flattened.extend(parsed_values)
+    return tuple(flattened)
+
+
+def _parse_float_values(values: list[str] | None, option_name: str) -> tuple[float, ...]:
+    parsed: list[float] = []
+    for value in _flatten_csv_values(values):
+        try:
+            parsed.append(float(value))
+        except ValueError as exc:
+            raise ValueError(f"{option_name} must contain numeric values: {value}") from exc
+    if not parsed:
+        raise ValueError(f"{option_name} requires at least one value.")
+    return tuple(parsed)
+
+
+def _parse_site_values(values: list[str] | None, location_count: int) -> tuple[str, ...]:
+    parsed = _flatten_csv_values(values)
+    if not parsed:
+        return tuple("NA" for _ in range(location_count))
+    if len(parsed) != location_count:
+        raise ValueError(
+            f"--site must contain {location_count} value(s) to match --lat/--lon; got {len(parsed)}."
+        )
+    return parsed
+
+
+def _location_requests(args: argparse.Namespace) -> tuple[dict[str, object], ...]:
+    latitudes = _parse_float_values(args.lat, "--lat")
+    longitudes = _parse_float_values(args.lon, "--lon")
+    if len(latitudes) != len(longitudes):
+        raise ValueError(
+            f"--lat and --lon must contain the same number of values; got {len(latitudes)} and {len(longitudes)}."
+        )
+
+    sites = _parse_site_values(args.site, len(latitudes))
+    return tuple(
+        {
+            "site": sites[index],
+            "lat": latitudes[index],
+            "lon": longitudes[index],
+        }
+        for index in range(len(latitudes))
+    )
+
+
+def _location_payload(location: dict[str, object], include_site: bool) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "lat": location["lat"],
+        "lon": location["lon"],
+    }
+    if include_site:
+        payload["site"] = location["site"]
+    return payload
+
+
+def _enrich_prediction_location(
+    payload: dict[str, object],
+    location: dict[str, object],
+    include_site: bool,
+) -> dict[str, object]:
+    request = payload.get("request")
+    if not isinstance(request, dict):
+        return payload
+
+    request_location = request.get("location")
+    if not isinstance(request_location, dict):
+        request_location = {}
+        request["location"] = request_location
+    request_location["lat"] = location["lat"]
+    request_location["lon"] = location["lon"]
+    if include_site:
+        request_location["site"] = location["site"]
+        payload["site"] = location["site"]
+    return payload
+
+
+def _combined_generated_at(payloads: list[dict[str, object]]) -> str:
+    for payload in payloads:
+        generated_at = payload.get("generated_at")
+        if isinstance(generated_at, str) and generated_at.strip():
+            return generated_at
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _combined_request(
+    payloads: list[dict[str, object]],
+    locations: tuple[dict[str, object], ...],
+) -> dict[str, object]:
+    first_request = payloads[0].get("request") if payloads else {}
+    request: dict[str, object] = {}
+    if isinstance(first_request, dict):
+        request.update(
+            {
+                str(key): value
+                for key, value in first_request.items()
+                if key != "location"
+            }
+        )
+    request["locations"] = [
+        _location_payload(location, include_site=True)
+        for location in locations
+    ]
+    return request
+
+
+def _build_multi_location_payload(
+    payloads: list[dict[str, object]],
+    locations: tuple[dict[str, object], ...],
+) -> dict[str, object]:
+    return {
+        "generated_at": _combined_generated_at(payloads),
+        "request": _combined_request(payloads, locations),
+        "locations": [
+            {
+                "site": location["site"],
+                "location": _location_payload(location, include_site=False),
+                "prediction": payloads[index],
+            }
+            for index, location in enumerate(locations)
+        ],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    locations = _location_requests(args)
     parsed_phenomena = parse_csv_values(args.phenomena)
     predictor_kwargs: dict[str, object] = {
         "at_time": parse_at_time(args.at_time),
@@ -104,10 +257,24 @@ def main(argv: list[str] | None = None) -> int:
         predictor_kwargs["lightweight"] = True
     if args.debug:
         predictor_kwargs["debug"] = True
-    payload = predict_all(
-        args.lat,
-        args.lon,
-        **predictor_kwargs,
+
+    include_site = args.site is not None or len(locations) > 1
+    payloads = [
+        _enrich_prediction_location(
+            predict_all(
+                float(location["lat"]),
+                float(location["lon"]),
+                **predictor_kwargs,
+            ),
+            location,
+            include_site=include_site,
+        )
+        for location in locations
+    ]
+    payload = (
+        payloads[0]
+        if len(payloads) == 1
+        else _build_multi_location_payload(payloads, locations)
     )
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0

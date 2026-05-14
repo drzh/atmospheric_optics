@@ -13,7 +13,7 @@ The current implementation combines:
 - asymmetric peak-preserving temporal smoothing across the output timeline
 - CLI and HTTP API entry points
 
-Predictions are returned as a top-level object with `generated_at`, `request`, `sources`, `clouds`, `celestial`, and `phenomena`. Each phenomenon entry contains nested `current`, `peak`, and `timeline` objects so the format can grow cleanly as new phenomena, data sources, cloud layers, and supporting metadata are added. Numeric values are rounded to 3 decimal places where applicable, and source timestamps are emitted in UTC. When requested, the payload also includes per-phenomenon `debug` terms for the physical (`P`), visibility (`V`), and geometry (`G`) components.
+Single-location predictions are returned as a top-level object with `generated_at`, `request`, `sources`, `clouds`, `celestial`, and `phenomena`. Multi-location CLI runs return a top-level `locations` array; each entry contains `site`, `location`, and a nested single-location `prediction` payload. Each phenomenon entry contains nested `current`, `peak`, and `timeline` objects so the format can grow cleanly as new phenomena, data sources, cloud layers, and supporting metadata are added. Numeric values are rounded to 3 decimal places where applicable, and source timestamps are emitted in UTC. When requested, the payload also includes per-phenomenon `debug` terms for the physical (`P`), visibility (`V`), and geometry (`G`) components.
 
 ## Supported Phenomena
 
@@ -117,6 +117,12 @@ cd atmospheric_optics
 python3 cli/command.py --lat 32.8 --lon -96.8
 ```
 
+Multiple locations:
+
+```bash
+python3 cli/command.py --lat 32.847,30.46 --lon=-96.806,-97.80 --site Dallas,Austin
+```
+
 Important:
 
 - The CLI and API default to the current UTC time, but `--at-time` / `at_time` can override that.
@@ -158,8 +164,9 @@ python3 cli/command.py --lat 32.8 --lon -96.8 --mode forecast --download-dir dat
 
 CLI options:
 
-- `--lat`: latitude in decimal degrees
-- `--lon`: longitude in decimal degrees
+- `--lat`: latitude in decimal degrees; repeat the option or use comma-separated values for multiple locations
+- `--lon`: longitude in decimal degrees; repeat the option or use comma-separated values for multiple locations. Use `--lon=-96.8,-97.8` for comma-separated negative longitudes.
+- `--site`: optional site names matching `--lat` / `--lon`; defaults to `NA`
 - `--mode`: `forecast` or `observed`
 - `--illumination`: `solar`, `lunar`, or `solar,lunar`; defaults to `solar,lunar`
 - `--at-time`: optional ISO 8601 prediction time
@@ -320,6 +327,12 @@ Top-level fields:
 - `clouds`: WMO cloud classification payload with `schema_version`, source booleans, and zero or more independent `cloud_layers`.
 - `celestial`: active solar and/or lunar altitude metadata used by the geometry models.
 - `phenomena`: list of per-phenomenon result objects. A list is used instead of top-level keyed fields so the format can grow without changing the surrounding envelope.
+
+For multi-location CLI runs, the top-level object contains:
+
+- `generated_at`: timestamp copied from the generated predictions.
+- `request.locations`: ordered list of requested `{site, lat, lon}` entries.
+- `locations`: ordered result entries with `site`, `location`, and nested `prediction` fields.
 
 Each `clouds.cloud_layers` entry contains:
 
@@ -628,8 +641,9 @@ name = "Home"
 url = "atmospheric-optics://home"
 threshold = 0.8
 timeout_seconds = 180
-lat = 32.847
-lon = -96.806
+lat = [32.847, 30.46]
+lon = [-96.806, -97.80]
+site = ["Dallas", "Austin"]
 mode = "observed"
 illumination = "solar,lunar"
 project_dir = "../atmospheric_optics"
@@ -657,6 +671,7 @@ Notes:
 - `timeout_seconds` can be raised for observed-mode targets so GOES and METAR ingestion have enough time to complete in cron jobs.
 - If `phenomena` is omitted, the alert provider defaults to all supported phenomena.
 - `illumination` is optional and defaults to `solar,lunar`; set it to `solar` or `lunar` to run only one illumination set.
+- `lat`, `lon`, and `site` can be arrays for multi-location checks; `site` defaults to `NA`.
 - Optional target options `at_time` and `time_window_hours` are passed through to the CLI.
 - Alert items use the phenomenon object's `peak.probability`, `peak.time`, and `current.reason`.
 - Exported JSON preserves the nested per-phenomenon structure, including `spatial_context`, instead of flattening it.
