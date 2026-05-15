@@ -680,7 +680,7 @@ Web export example:
 
 ```bash
 cd ../alert
-python3 -m alert.exporters.atmospheric_optics_json \
+python3 -m alert.providers.atmospheric_optics \
   --config alerts.toml \
   --source atmospheric_optics \
   --target-name Home \
