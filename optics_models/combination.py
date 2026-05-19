@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from optics_models.probability import DEFAULT_WEIGHTS, ModelWeights, clamp, sigmoid
+from optics_models.probability import DEFAULT_WEIGHTS, ModelWeights, clamp
 
-LOG_COMBINE_EPSILON = 1e-6
+LOG_COMBINE_EPSILON = 1e-9
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ def combine_log(
         + (weights.visibility * math.log(clamped_visibility + safe_epsilon))
         + (weights.geometry * math.log(clamped_geometry + safe_epsilon))
     )
-    probability = clamp(sigmoid(combined_score))
+    probability = clamp(math.exp(combined_score))
     if return_components:
         return ModelComponents(
             probability=probability,

@@ -11,7 +11,7 @@ def test_combine_log_increases_with_stronger_component_support() -> None:
     strong = combine_log(1.0, 1.0, 1.0)
 
     assert weak < medium < strong
-    assert strong == pytest.approx(0.5, abs=0.001)
+    assert strong == pytest.approx(1.0, abs=0.001)
 
 
 def test_combine_log_penalizes_missing_component_support() -> None:

@@ -50,7 +50,7 @@ def test_spatial_context_and_confidence_reflect_consistency() -> None:
     assert 0.0 <= confidence <= 0.9
 
 
-def test_weighted_spatial_sampling_biases_toward_center_and_solar_direction() -> None:
+def test_weighted_spatial_sampling_biases_directional_phenomena() -> None:
     samples = [
         SpatialSample(lat=0.0, lon=0.0, dx_km=-10.0, dy_km=0.0, distance_km=10.0),
         SpatialSample(lat=0.0, lon=0.0, dx_km=0.0, dy_km=0.0, distance_km=0.0),
@@ -59,8 +59,22 @@ def test_weighted_spatial_sampling_biases_toward_center_and_solar_direction() ->
     probabilities = [0.9, 0.4, 0.9]
 
     halo_weighted = apply_spatial_weights("halo", probabilities, samples, radius_km=20.0)
-    directional_weighted = apply_spatial_weights(
+    source_facing_weighted = apply_spatial_weights(
+        "crepuscular_rays",
+        probabilities,
+        samples,
+        radius_km=20.0,
+        solar_azimuth=90.0,
+    )
+    anti_source_weighted = apply_spatial_weights(
         "rainbow",
+        probabilities,
+        samples,
+        radius_km=20.0,
+        solar_azimuth=90.0,
+    )
+    moonbow_weighted = apply_spatial_weights(
+        "moonbow",
         probabilities,
         samples,
         radius_km=20.0,
@@ -70,7 +84,9 @@ def test_weighted_spatial_sampling_biases_toward_center_and_solar_direction() ->
     assert halo_weighted[1] == pytest.approx(0.4)
     assert halo_weighted[0] < probabilities[0]
     assert halo_weighted[2] < probabilities[2]
-    assert directional_weighted[2] > directional_weighted[0]
+    assert source_facing_weighted[2] > source_facing_weighted[0]
+    assert anti_source_weighted[0] > anti_source_weighted[2]
+    assert moonbow_weighted[0] > moonbow_weighted[2]
 
 
 def test_weighted_blend_aggregation_retains_local_peaks_without_becoming_max_only() -> None:

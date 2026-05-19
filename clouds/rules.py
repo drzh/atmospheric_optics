@@ -47,14 +47,14 @@ def classify_metar_layer(layer: MetarCloudLayer, metar: ParsedMetar, goes: GoesF
         return "Ns"
     if layer.convective_type == "TCU" or texture == "towering":
         return "Cu"
+    if category == "low" and _is_detached_cellular_cloud(layer.coverage, texture):
+        return "Cu"
     if category == "high" or (category == "unknown" and phase == "ice"):
         return classify_high_cloud(goes, coverage=layer.coverage)
     if category == "middle":
         return "Ac" if texture in {"cellular", "granular"} else "As"
     if texture in {"cellular", "granular"}:
         return "Sc"
-    if layer.coverage in {"few", "scattered"} and texture == "towering":
-        return "Cu"
     return "St"
 
 
@@ -64,11 +64,14 @@ def classify_goes_layer(goes: GoesFeatures, metar: ParsedMetar) -> str:
     if metar.precipitation and goes.texture == "smooth":
         return "Ns"
     category = altitude_category_for_goes(goes)
+    coverage = _coverage_name(goes.cloud_cover)
     if category == "high" or goes.cloud_phase == "ice":
-        return classify_high_cloud(goes, coverage=_coverage_name(goes.cloud_cover))
+        return classify_high_cloud(goes, coverage=coverage)
     if category == "middle":
         return "Ac" if goes.texture in {"cellular", "granular"} else "As"
     if goes.texture == "towering":
+        return "Cu"
+    if category == "low" and _is_detached_cellular_cloud(coverage, goes.texture):
         return "Cu"
     if goes.texture in {"cellular", "granular"}:
         return "Sc"
@@ -117,6 +120,10 @@ def _goes_deep_convection(goes: GoesFeatures) -> bool:
     if goes.cloud_top_m is not None and goes.cloud_top_m >= 9_000.0:
         return True
     return goes.cloud_top_temp_k is not None and goes.cloud_top_temp_k <= 225.0
+
+
+def _is_detached_cellular_cloud(coverage: str, texture: str | None) -> bool:
+    return coverage in {"few", "scattered"} and texture in {"cellular", "granular"}
 
 
 def _coverage_name(cloud_cover: float | None) -> str:

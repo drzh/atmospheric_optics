@@ -27,7 +27,7 @@ def test_predict_halo_matches_quantitative_ice_visibility_geometry_model() -> No
     probability = predict_halo(features)
     parhelia_probability = predict_parhelia(features)
 
-    assert probability == pytest.approx(0.16, abs=0.03)
+    assert probability == pytest.approx(0.2, abs=0.03)
     assert parhelia_probability < probability
     assert predict_parhelia({**features, "plate_alignment": 0.3}) < parhelia_probability
     assert predict_halo({**features, "cloud_optical_thickness": 0.9}) < probability

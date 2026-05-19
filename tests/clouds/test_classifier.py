@@ -51,6 +51,44 @@ def test_classify_clouds_identifies_cumulonimbus_from_metar_and_goes() -> None:
     assert layers[0].confidence >= 0.9
 
 
+def test_classify_clouds_identifies_cumulus_from_low_scattered_cellular_layer() -> None:
+    layers = classify_clouds(
+        {
+            "goes_cloud_phase": "liquid",
+            "goes_texture": "cellular",
+            "goes_cloud_cover": 0.35,
+            "goes_altitude_category": "low",
+        },
+        {
+            "metar_raw": {
+                "rawOb": "METAR KDAL 071653Z 15009KT 10SM SCT025 24/14 A3019",
+            },
+        },
+    )
+
+    assert len(layers) == 1
+    assert layers[0].code == "Cu"
+    assert layers[0].genus == "Cumulus"
+    assert layers[0].altitude_category == "low"
+
+
+def test_classify_clouds_keeps_broken_low_cellular_deck_as_stratocumulus() -> None:
+    layers = classify_clouds(
+        {
+            "goes_cloud_phase": "liquid",
+            "goes_texture": "cellular",
+            "goes_cloud_cover": 0.75,
+            "goes_altitude_category": "low",
+            "goes_cloud_top_m": 1_500.0,
+        },
+        {},
+    )
+
+    assert len(layers) == 1
+    assert layers[0].code == "Sc"
+    assert layers[0].genus == "Stratocumulus"
+
+
 def test_build_cloud_classification_payload_uses_source_gates() -> None:
     payload = build_cloud_classification_payload(
         {"cloud_cover_high": 0.8},

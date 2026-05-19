@@ -388,7 +388,8 @@ Current spatial behavior:
 
 - Base radii remain phenomenon-specific, but the effective `radius_km` is adaptive and scales with `cloud_variability` and `wind_shear_250`.
 - All phenomena use the same weighted-blend aggregation after distance weighting.
-- `rainbow`, `crepuscular_rays`, `sun_pillar`, `moonbow`, and `lunar_pillar` also apply directional weighting using the active source azimuth.
+- `crepuscular_rays`, `sun_pillar`, and `lunar_pillar` apply directional weighting toward the active source azimuth.
+- `rainbow` and `moonbow` apply directional weighting toward the anti-source direction, where bows are observed.
 
 Practical guidance:
 
@@ -464,7 +465,7 @@ Each probability is built from three smooth components:
 - `Visibility`
 - `Geometry`
 
-The models use a weighted log-combination step rather than direct multiplication.
+The models use a weighted log-product combination step, calibrated so full component support maps to `1.0` while missing or weak components remain strongly suppressive.
 
 Shared implementation details:
 
@@ -496,14 +497,14 @@ sigmoid(x; k, x0) = 1 / (1 + exp(-k * (x - x0)))
 gaussian(x; mu, sigma) = exp(-((x - mu)^2) / (2 * sigma^2))
 
 combine_log(P, V, G) =
-  sigmoid(
-      1.2 * log(clamp(P) + 1e-6)
-    + 1.0 * log(clamp(V) + 1e-6)
-    + 1.1 * log(clamp(G) + 1e-6)
-  )
+  clamp(exp(
+      1.2 * log(clamp(P) + 1e-9)
+    + 1.0 * log(clamp(V) + 1e-9)
+    + 1.1 * log(clamp(G) + 1e-9)
+  ))
 ```
 
-Where `clamp()` limits a value to the `0..1` interval.
+Where `clamp()` limits a value to the `0..1` interval. With `P = V = G = 1`, the result is `1.0`; if any required component is absent, the small epsilon keeps the calculation finite while leaving the probability near zero.
 
 ### Phenomenon Models
 

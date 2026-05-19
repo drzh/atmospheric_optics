@@ -25,13 +25,16 @@ SPATIAL_RADIUS_KM: dict[str, float] = {
     "lunar_corona": 15.0,
     "moonbow": 25.0,
 }
-DIRECTIONAL_PHENOMENA = {
-    "rainbow",
+SOURCE_FACING_DIRECTIONAL_PHENOMENA = {
     "crepuscular_rays",
     "sun_pillar",
-    "moonbow",
     "lunar_pillar",
 }
+ANTI_SOURCE_DIRECTIONAL_PHENOMENA = {
+    "rainbow",
+    "moonbow",
+}
+DIRECTIONAL_PHENOMENA = SOURCE_FACING_DIRECTIONAL_PHENOMENA | ANTI_SOURCE_DIRECTIONAL_PHENOMENA
 
 
 @dataclass(frozen=True)
@@ -167,8 +170,10 @@ def apply_spatial_weights(
             weighted_probabilities.append(math.nan)
             continue
         weight = spatial_weight(sample.distance_km, sigma_km)
-        if phenomenon in DIRECTIONAL_PHENOMENA:
+        if phenomenon in SOURCE_FACING_DIRECTIONAL_PHENOMENA:
             weight *= directional_weight(sample.dx_km, sample.dy_km, solar_azimuth)
+        elif phenomenon in ANTI_SOURCE_DIRECTIONAL_PHENOMENA:
+            weight *= directional_weight(sample.dx_km, sample.dy_km, solar_azimuth + 180.0)
         weighted_probabilities.append(_clamp_unit_interval(probability * weight))
     return weighted_probabilities
 
