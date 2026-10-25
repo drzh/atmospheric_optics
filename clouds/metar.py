@@ -15,7 +15,10 @@ from clouds.constants import (
 from clouds.types import MetarCloudLayer, ParsedMetar
 
 METAR_CLOUD_TOKEN = re.compile(r"\b(FEW|SCT|BKN|OVC|VV)(\d{3}|///)?(CB|TCU)?\b")
-WX_TOKEN = re.compile(r"^[+-]?(VC)?[A-Z]{2,}$")
+WX_TOKEN = re.compile(
+    r"^[+-]?(?:VC)?(?:(?:MI|PR|BC|DR|BL|SH|TS|FZ)?"
+    r"(?:DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PY|PO|SQ|FC|SS|DS){1,3}|TS|SH)$"
+)
 
 
 def parse_metar(metar_data: Mapping[str, object] | None) -> ParsedMetar:
@@ -114,7 +117,12 @@ def _extract_raw_layers(raw_observation: str) -> list[MetarCloudLayer]:
 
 def _extract_weather_codes(record: Mapping[str, object], raw_observation: str) -> list[str]:
     weather_text = str(record.get("wxString") or record.get("weather") or "").strip().upper()
-    tokens = [token.strip() for token in f"{weather_text} {raw_observation}".split() if token.strip()]
+    report_body = raw_observation.split(" RMK", 1)[0]
+    body_tokens = report_body.split()
+    report_time_index = next((index for index, token in enumerate(body_tokens) if re.fullmatch(r"\d{6}Z", token)), None)
+    if report_time_index is not None:
+        body_tokens = body_tokens[report_time_index + 1:]
+    tokens = weather_text.split() + body_tokens
     weather_codes: list[str] = []
     for token in tokens:
         normalized_token = token.strip().upper()

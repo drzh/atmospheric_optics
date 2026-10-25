@@ -164,6 +164,22 @@ def test_compute_features_supports_lunar_visibility_and_darkness() -> None:
     assert result["moon_elevation"] == pytest.approx(15.0)
     assert result["moon_phase"] == pytest.approx(0.9)
     assert result["moon_visible"] > 0.9
-    assert result["brightness_factor"] == pytest.approx(0.9**1.5)
+    assert result["brightness_factor"] == pytest.approx(0.85)
     assert result["sky_darkness"] == pytest.approx(1.0)
     assert result["solar_elevation"] == pytest.approx(-18.0)
+
+
+def test_lunar_brightness_honors_illuminance_and_retains_phase_fallback() -> None:
+    moon = {"elevation": 20.0, "phase": 0.9}
+    solar = {"elevation": -18.0}
+    fallback = compute_features({}, moon, illumination="lunar", solar=solar)
+    dim = compute_features({}, {**moon, "illuminance": 0.01}, illumination="lunar", solar=solar)
+    twilight = compute_features({}, {**moon, "illuminance": 0.8}, illumination="lunar", solar={"elevation": -12.0})
+
+    assert fallback["brightness_factor"] == pytest.approx(0.9**1.5)
+    assert dim["brightness_factor"] == pytest.approx(0.01)
+    assert twilight["brightness_factor"] == pytest.approx(0.4)
+
+
+def test_extreme_source_elevation_does_not_overflow_visibility() -> None:
+    assert compute_features({}, {"elevation": -1e6})["source_visible"] == 0.0

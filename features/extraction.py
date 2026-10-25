@@ -81,9 +81,7 @@ def compute_features(
         if not math.isfinite(moon_illuminance):
             moon_illuminance = _clamp_unit_interval(moon_phase**1.5) if math.isfinite(moon_phase) else 0.0
         sky_darkness = _compute_sky_darkness(solar_elevation)
-        brightness_factor = (
-            _clamp_unit_interval(moon_phase**1.5) * sky_darkness if math.isfinite(moon_phase) else 0.0
-        )
+        brightness_factor = moon_illuminance * sky_darkness
         source_visibility = moon_visible
 
     features = {
@@ -168,7 +166,11 @@ def _nonnegative_or_nan(value: object) -> float:
 def _sigmoid(x: float, *, k: float, x0: float) -> float:
     if not math.isfinite(x) or not math.isfinite(k) or not math.isfinite(x0):
         return 0.0
-    return 1.0 / (1.0 + math.exp(-k * (x - x0)))
+    exponent = k * (x - x0)
+    if exponent >= 0.0:
+        return 1.0 / (1.0 + math.exp(-exponent))
+    exp_value = math.exp(exponent)
+    return exp_value / (1.0 + exp_value)
 
 
 def _compute_sky_darkness(solar_elevation: float) -> float:

@@ -24,6 +24,7 @@ class CzaParameters:
 
 
 DEFAULT_CZA_PARAMETERS = CzaParameters()
+CZA_MAX_ELEVATION = 32.0
 
 
 def predict_cza(
@@ -38,11 +39,12 @@ def predict_cza(
     visibility = unit_feature(features, "sun_visible") * math.exp(
         -unit_feature(features, "cloud_optical_thickness")
     )
+    solar_elevation = numeric_feature(features, "solar_elevation")
     geometry = gaussian(
-        numeric_feature(features, "solar_elevation"),
+        solar_elevation,
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
-    )
+    ) if 0.0 <= solar_elevation < CZA_MAX_ELEVATION else 0.0
 
     return combine_log(
         physical,

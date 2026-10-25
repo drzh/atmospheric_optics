@@ -69,6 +69,7 @@ class SunPillarParameters:
 DEFAULT_CIRCUMHORIZONTAL_ARC_PARAMETERS = CircumhorizontalArcParameters()
 DEFAULT_UPPER_TANGENT_ARC_PARAMETERS = UpperTangentArcParameters()
 DEFAULT_SUN_PILLAR_PARAMETERS = SunPillarParameters()
+CIRCUMHORIZONTAL_MIN_ELEVATION = 58.0
 
 
 def predict_circumhorizontal_arc(
@@ -91,6 +92,8 @@ def predict_circumhorizontal_arc(
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
     )
+    if not CIRCUMHORIZONTAL_MIN_ELEVATION < source_elevation <= 90.0:
+        geometry = 0.0
     return combine_log(
         physical,
         visibility,

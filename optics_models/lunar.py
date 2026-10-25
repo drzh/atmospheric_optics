@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from optics_models.combination import ModelComponents, combine_log
-from optics_models.probability import DEFAULT_WEIGHTS, ModelWeights, gaussian, unit_feature
+from optics_models.probability import DEFAULT_WEIGHTS, ModelWeights, gaussian, numeric_feature, unit_feature
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ def predict_lunar_corona(
 ) -> float | ModelComponents:
     """Predict the probability of a lunar corona."""
 
+    optical_thickness = numeric_feature(features, "cloud_optical_thickness")
     physical = gaussian(
         unit_feature(features, "cloud_optical_thickness"),
         mu=parameters.optical_thickness_mu,
@@ -40,6 +41,8 @@ def predict_lunar_corona(
         mu=parameters.variability_mu,
         sigma=parameters.variability_sigma,
     )
+    if not math.isfinite(optical_thickness) or optical_thickness <= 0.0:
+        physical = 0.0
     visibility = (
         unit_feature(features, "source_visible", default=unit_feature(features, "moon_visible"))
         * math.exp(-(parameters.cloud_penalty * unit_feature(features, "cloud_optical_thickness")))

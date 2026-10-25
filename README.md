@@ -37,6 +37,8 @@ Lunar mode:
 - `lunar_corona`
 - `moonbow`
 
+The [additional-phenomena feasibility review](docs/new-phenomena-feasibility-2026-10-24.md) recommends solar corona as the first extension, with anticrepuscular rays and secondary rainbows as follow-on candidates. It documents required inputs, implementation work, and validation limits; these proposed IDs are not registered forecasts yet.
+
 ## Weather Modes
 
 - `forecast`
@@ -367,10 +369,10 @@ Field meanings:
 
 - `radius_km`: the adaptive radius of influence used for the weighted 3x3 sampling field.
 - `aggregation`: the current spatial merge rule. It is `weighted_blend`, which combines weighted mean support and weighted local peaks.
-- `center_probability`: the weighted probability at the requested latitude/longitude.
+- `center_probability`: the raw model probability at the requested latitude/longitude.
 - `mean_probability`: the weighted mean of the sampled neighborhood.
-- `max_probability`: the strongest weighted sampled probability in the neighborhood.
-- `min_probability`: the weakest weighted sampled probability in the neighborhood.
+- `max_probability`: the strongest raw sampled probability among points with positive sampling weight.
+- `min_probability`: the weakest raw sampled probability among points with positive sampling weight.
 - `spatial_variance`: how uneven the neighborhood is. Higher values mean the favorable signal is patchy or sharply changing across the grid.
 - `spatial_consistency`: `1 - spatial_variance`, clamped to `0..1`. Higher values mean neighboring points agree more strongly.
 - `spatial_gradient`: `max_probability - min_probability`, useful for spotting sharp nearby transitions.
@@ -390,6 +392,10 @@ Current spatial behavior:
 - All phenomena use the same weighted-blend aggregation after distance weighting.
 - `crepuscular_rays`, `sun_pillar`, and `lunar_pillar` apply directional weighting toward the active source azimuth.
 - `rainbow` and `moonbow` apply directional weighting toward the anti-source direction, where bows are observed.
+
+Sampling weights control how much each point contributes, rather than reducing the underlying weather score. The blend is `0.6 * sum(p * w) / sum(w) + 0.4 * max(p * w / max(w))`, using only finite probabilities with positive weights. A uniform field with probability `p` therefore stays at `p`, including at the default grid spacing. Spatial statistics use raw point probabilities and normalized weights, so distance alone does not create apparent cloud variability.
+
+Before the October 24, 2026 correction, weighted contributions were divided by the number of grid points. Even perfect conditions then scored at most about `0.508` (`0.487` for directional phenomena), making an alert threshold of `0.8` unreachable with the default spatial grid. The corrected aggregation removes that ceiling while retaining distance and directional influence on localized peaks.
 
 Practical guidance:
 
@@ -457,7 +463,7 @@ Fallback behavior:
 
 ## Model Summary
 
-The implementation uses quantitative rule-based models in `optics_models/`.
+The implementation uses quantitative rule-based models in `optics_models/`. The [October 24 model reasonableness review](docs/model-reasonableness-review-2026-10-24.md) documents physical constraints, missing-data handling, and remaining calibration limits.
 
 Each probability is built from three smooth components:
 
@@ -465,7 +471,7 @@ Each probability is built from three smooth components:
 - `Visibility`
 - `Geometry`
 
-The models use a weighted log-product combination step, calibrated so full component support maps to `1.0` while missing or weak components remain strongly suppressive.
+The models use a weighted log-product combination step, normalized so full component support maps to `1.0` while missing or weak components remain strongly suppressive. These are heuristic suitability scores, not probabilities fitted to labeled observations. A score of `0.8` should not be interpreted as a measured 80% occurrence rate; `confidence` describes input support and consistency rather than verified forecast accuracy.
 
 Shared implementation details:
 
@@ -480,9 +486,9 @@ Shared implementation details:
 - `wind_stability = exp(-wind_shear_250 - vertical_velocity_variance)`
 - `cloud_variability` is derived from a 3x3 cloud-cover neighborhood when present, otherwise fallback `0.3`
 - `source_visible = sigmoid(source_elevation; 1.5, -2.0)` with lunar mode further scaled by moon phase and sky darkness
-- `brightness_factor = 1.0` in solar mode, and approximately `moon_phase^1.5 * sky_darkness` in lunar mode
+- `brightness_factor = 1.0` in solar mode, and `moon_illuminance * sky_darkness` in lunar mode. Supplied illuminance is honored; absent illuminance falls back to `moon_phase^1.5`.
 - `precipitation` is a non-negative precipitation signal.
-- `surface_visibility` and `fog_presence` are populated from METAR parsing, so they are most informative in `observed` mode.
+- `surface_visibility` (statute miles) and `fog_presence` are populated from METAR parsing, so they are most informative in `observed` mode. Current weather groups are parsed separately from station identifiers and remarks. Liquid precipitation requires a rain/drizzle code; thunder alone and vicinity showers do not establish liquid rain at the station.
 - Predictor output also includes:
   `confidence`, a weighted blend of the explicit `confidence_components`
   `timeline`, a 0-3 hour forecast window with `now`, `1h`, `2h`, and `3h`
@@ -502,9 +508,10 @@ combine_log(P, V, G) =
     + 1.0 * log(clamp(V) + 1e-9)
     + 1.1 * log(clamp(G) + 1e-9)
   ))
+# If any clamped component is zero, the result is exactly zero.
 ```
 
-Where `clamp()` limits a value to the `0..1` interval. With `P = V = G = 1`, the result is `1.0`; if any required component is absent, the small epsilon keeps the calculation finite while leaving the probability near zero.
+Where `clamp()` limits a value to the `0..1` interval. With `P = V = G = 1`, the result is `1.0`; a zero required component returns exactly zero. Temporal smoothing preserves zero-support slots, so future favorable conditions cannot create support at a currently impossible time.
 
 ### Phenomenon Models
 
@@ -539,7 +546,7 @@ G = gaussian(solar_elevation; 22.0, 5.0)
 Probability = combine_log(P, V, G)
 ```
 
-Rule summary: same ice-and-thin-cirrus support as halo, but with a much tighter solar-elevation window.
+Rule summary: same ice-and-thin-cirrus support as halo, but with a much tighter solar-elevation window. Geometry is zero outside `0 <= solar_elevation < 32` degrees.
 
 `circumhorizontal_arc`
 
@@ -551,7 +558,7 @@ G = sigmoid(solar_elevation; 0.6, 58.0)
 Probability = combine_log(P, V, G)
 ```
 
-Rule summary: the same thin icy cirrus support is required, but the sun must be quite high.
+Rule summary: the same thin icy cirrus support is required, and geometry is zero unless `58 < source_elevation <= 90` degrees.
 
 `upper_tangent_arc`
 
@@ -592,30 +599,30 @@ Rule summary: crepuscular rays now use explicit cloud-structure variability inst
 `rainbow`
 
 ```text
-P = sigmoid(precipitation; 5.0, 0.1)
-V = sun_visible
+dry_baseline = sigmoid(0; 5.0, 0.1)
+P = (sigmoid(precipitation; 5.0, 0.1) - dry_baseline) / (1 - dry_baseline)
+V = sun_visible * exp(-cloud_optical_thickness)
 G = gaussian(solar_elevation; 20.0, 15.0)
 Probability = combine_log(P, V, G)
 ```
 
-Rule summary: rainbows remain precipitation-driven and use the same weighted log combination as the other phenomenon models.
+Rule summary: dry, negative, or missing precipitation gives zero physical support. Cloud thickness attenuates the light-source visibility term. The primary above-horizon bow model requires `0 <= source_elevation < 42` degrees; the same limits apply to moonbows using lunar elevation. The model assumes a ground-level observer and does not cover below-horizon aircraft or waterfall geometries.
 
 `fogbow`
 
 ```text
-P = max(
-      fog_presence,
-      gaussian(surface_visibility; 0.8, 0.8)
-    )
+visibility_support = gaussian(surface_visibility; 0.8, 0.8)
+# visibility_support = 1 if visibility is unavailable; reported fog is still required.
+P = fog_presence * visibility_support
   * (1 - sigmoid(precipitation; 8.0, 0.6))
 V = sun_visible * exp(-0.25 * cloud_optical_thickness)
 G = gaussian(solar_elevation; 15.0, 12.0)
 Probability = combine_log(P, V, G)
 ```
 
-Rule summary: fogbows favor fog or mist, low visibility, visible sun, and only limited competing precipitation.
+Rule summary: fog or mist evidence is required; low visibility from smoke or haze alone does not establish droplets. Missing visibility does not prevent a reported fog observation from contributing. Geometry is zero outside `0 <= solar_elevation < 42` degrees.
 
-Practical note: `fogbow` is best supported in `observed` mode because `surface_visibility` and `fog_presence` come from METAR parsing.
+Practical note: `fogbow` is best supported in `observed` mode because `surface_visibility` and `fog_presence` come from METAR parsing. Without a fog/mist signal, the forecast-mode fogbow score is zero.
 
 Lunar reuse summary:
 
@@ -624,6 +631,8 @@ Lunar reuse summary:
 - `lunar_pillar` reuses the sun-pillar model with lunar source geometry and brightness scaling
 - `moonbow` reuses the rainbow model with lunar source geometry and brightness scaling
 - `lunar_corona` is a lunar-specific thin-cloud diffraction model
+
+`lunar_corona` requires a finite positive cloud optical-thickness input; clear or missing cloud evidence gives zero physical support. Its Gaussian preferences remain heuristic and do not measure particle-size distributions directly.
 
 ## Alert Integration
 

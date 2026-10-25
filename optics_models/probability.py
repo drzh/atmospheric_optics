@@ -22,7 +22,11 @@ def sigmoid(x: float, k: float = 1.0, x0: float = 0.0) -> float:
 
     if not math.isfinite(x) or not math.isfinite(k) or not math.isfinite(x0):
         return 0.0
-    return 1.0 / (1.0 + math.exp(-k * (x - x0)))
+    exponent = k * (x - x0)
+    if exponent >= 0.0:
+        return 1.0 / (1.0 + math.exp(-exponent))
+    exp_value = math.exp(exponent)
+    return exp_value / (1.0 + exp_value)
 
 
 def gaussian(x: float, mu: float, sigma: float) -> float:

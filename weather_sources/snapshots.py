@@ -21,6 +21,8 @@ from typing import Iterable
 
 import requests
 
+from clouds.metar import parse_metar
+
 LOGGER = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,17 +74,6 @@ WGRIB2_FALLBACKS = (
     "/home/celaeno/usr/bin/wgrib2",
     "/usr/local/bin/wgrib2",
     "/usr/bin/wgrib2",
-)
-LIQUID_PRECIP_CODES = (
-    "DZ",
-    "RA",
-    "SHRA",
-    "SHDZ",
-    "TSRA",
-    "TS",
-    "VCSH",
-    "FZRA",
-    "FZDZ",
 )
 GOES_START_TIME_PATTERN = re.compile(r"_s(\d{4})(\d{3})(\d{2})(\d{2})(\d{2})\d_")
 METAR_REPORT_TIME_PATTERN = re.compile(r"\b(\d{2})(\d{2})(\d{2})Z\b")
@@ -1257,15 +1248,10 @@ def _extract_metar_high_cloud_cover(record: dict[str, object]) -> float:
 
 
 def _extract_metar_precipitation(record: dict[str, object]) -> float:
-    raw_ob = str(record.get("rawOb", "")).upper()
-    if not raw_ob:
-        return 0.0
-
-    tokens = raw_ob.split()
-    for token in tokens:
-        if any(code in token for code in LIQUID_PRECIP_CODES):
-            return 1.0
-    return 0.0
+    if not record.get("rawOb") and not record.get("wxString"):
+        return MISSING_VALUE
+    codes = parse_metar(record).weather_codes
+    return 1.0 if any(code in {"RA", "DZ"} for code in codes) else 0.0
 
 
 def _extract_metar_surface_visibility(record: dict[str, object]) -> float:
@@ -1328,15 +1314,12 @@ def _parse_metar_visibility(value: object, previous_token: str | None = None) ->
 
 
 def _extract_metar_fog_presence(record: dict[str, object]) -> float:
-    wx_string = str(record.get("wxString", "")).upper()
-    raw_ob = str(record.get("rawOb", "")).upper()
-    tokens = (f"{wx_string} {raw_ob}").split()
-    if not tokens:
+    if not record.get("rawOb") and not record.get("wxString"):
         return MISSING_VALUE
-
-    if any("FG" in token for token in tokens):
+    codes = parse_metar(record).weather_codes
+    if "FG" in codes:
         return 1.0
-    if any("BR" in token for token in tokens):
+    if "BR" in codes:
         return 0.7
     return 0.0
 

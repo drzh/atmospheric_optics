@@ -38,7 +38,11 @@ def combine_log(
         + (weights.visibility * math.log(clamped_visibility + safe_epsilon))
         + (weights.geometry * math.log(clamped_geometry + safe_epsilon))
     )
-    probability = clamp(math.exp(combined_score))
+    probability = (
+        clamp(math.exp(combined_score))
+        if clamped_physical > 0.0 and clamped_visibility > 0.0 and clamped_geometry > 0.0
+        else 0.0
+    )
     if return_components:
         return ModelComponents(
             probability=probability,

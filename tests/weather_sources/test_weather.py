@@ -297,6 +297,18 @@ def test_extract_metar_precipitation_flags_rain_weather_codes() -> None:
     assert payload == pytest.approx(1.0)
 
 
+@pytest.mark.parametrize("wx,expected", [("-RA", 1.0), ("FZDZ", 1.0), ("TSRA", 1.0), ("TS", 0.0), ("VCSH", 0.0), ("SN", 0.0)])
+def test_liquid_precipitation_requires_rain_or_drizzle(wx, expected) -> None:
+    record = {"rawOb": f"METAR KRAL 250353Z 00000KT 10SM {wx} CLR 20/10 A3000 RMK RAB05E15"}
+    assert weather._extract_metar_precipitation(record) == expected
+
+
+def test_missing_weather_is_not_assumed_dry_or_foggy() -> None:
+    assert math.isnan(weather._extract_metar_precipitation({}))
+    assert math.isnan(weather._extract_metar_fog_presence({}))
+    assert weather._extract_metar_fog_presence({"rawOb": "METAR KBRD 250353Z 00000KT 1SM HZ CLR 20/10 A3000"}) == 0.0
+
+
 def test_extract_metar_surface_visibility_supports_fractional_values() -> None:
     record = {
         "rawOb": "METAR KDAL 071653Z 15009KT 1 1/2SM BR BKN250 19/02 A3019",

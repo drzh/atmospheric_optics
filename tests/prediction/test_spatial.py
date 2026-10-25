@@ -9,7 +9,9 @@ from prediction.spatial_sampling import (
     aggregate_probabilities,
     apply_spatial_weights,
     generate_grid,
+    generate_samples,
     spatial_context,
+    spatial_weights,
 )
 
 
@@ -96,3 +98,36 @@ def test_weighted_blend_aggregation_retains_local_peaks_without_becoming_max_onl
 
     assert aggregated > (sum(weighted_probabilities) / len(weighted_probabilities))
     assert aggregated < max(weighted_probabilities)
+
+
+@pytest.mark.parametrize("phenomenon", ["halo", "rainbow", "sun_pillar", "lunar_corona"])
+@pytest.mark.parametrize("probability", [0.0, 0.8, 1.0])
+@pytest.mark.parametrize("spacing", [None, 5.0])
+def test_uniform_weather_is_preserved_by_spatial_sampling(phenomenon, probability, spacing) -> None:
+    samples = generate_samples(32.847, -96.806, 30.0, spatial_resolution_km=spacing)
+    weights = spatial_weights(phenomenon, samples, radius_km=30.0, solar_azimuth=180.0)
+    values = [probability] * len(samples)
+
+    assert aggregate_probabilities(values, weights=weights) == pytest.approx(probability)
+    context = spatial_context(phenomenon, values, weights=weights)
+    assert context["mean_probability"] == pytest.approx(probability)
+    assert context["max_probability"] == pytest.approx(probability)
+    assert context["min_probability"] == pytest.approx(probability)
+    assert context["spatial_variance"] == pytest.approx(0.0)
+    assert context["spatial_consistency"] == pytest.approx(1.0)
+
+
+def test_remote_hotspot_does_not_become_a_strong_local_prediction() -> None:
+    samples = generate_samples(32.847, -96.806, 30.0)
+    weights = spatial_weights("halo", samples, radius_km=30.0)
+    values = [1.0] + [0.0] * 8
+
+    assert aggregate_probabilities(values, weights=weights) < 0.1
+
+
+def test_missing_points_are_excluded_from_weight_normalization() -> None:
+    assert aggregate_probabilities([float("nan"), 0.9], weights=[1.0, 0.1]) == pytest.approx(0.9)
+    assert aggregate_probabilities([float("nan")], weights=[1.0]) == 0.0
+    assert aggregate_probabilities([0.9], weights=[0.0]) == 0.0
+    with pytest.raises(ValueError, match="same number"):
+        aggregate_probabilities([0.9], weights=[1.0, 1.0])

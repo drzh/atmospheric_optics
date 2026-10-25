@@ -16,10 +16,10 @@ from prediction.spatial_sampling import (
     adaptive_radius,
     aggregate_probabilities,
     aggregation_for,
-    apply_spatial_weights,
     generate_samples,
     radius_for,
     spatial_context as build_spatial_context,
+    spatial_weights,
 )
 from prediction.temporal_smoothing import (
     PEAK_PRESERVATION_THRESHOLD,
@@ -123,7 +123,7 @@ PHENOMENON_FEATURES: dict[str, tuple[str, ...]] = {
         "solar_elevation",
     ),
     "crepuscular_rays": ("cirrus_coverage", "cloud_variability", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
-    "rainbow": ("precipitation", "sun_visible", "solar_elevation"),
+    "rainbow": ("precipitation", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
     "fogbow": ("fog_presence", "surface_visibility", "precipitation", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
     "lunar_halo": ("ice_presence", "thin_cirrus", "source_visible", "brightness_factor", "cloud_optical_thickness", "source_elevation", "moon_phase", "sky_darkness"),
     "paraselenae": (
@@ -151,7 +151,7 @@ PHENOMENON_FEATURES: dict[str, tuple[str, ...]] = {
         "sky_darkness",
     ),
     "lunar_corona": ("source_visible", "brightness_factor", "moon_phase", "sky_darkness", "cloud_optical_thickness", "cloud_variability"),
-    "moonbow": ("precipitation", "source_visible", "brightness_factor", "source_elevation", "moon_phase", "sky_darkness"),
+    "moonbow": ("precipitation", "source_visible", "cloud_optical_thickness", "brightness_factor", "source_elevation", "moon_phase", "sky_darkness"),
 }
 
 
@@ -368,6 +368,11 @@ def _predict_for_illumination(
             preserve_peak=True,
             preserve_peak_threshold=PEAK_PRESERVATION_THRESHOLD,
         )
+        # Neighboring times cannot supply a physical ingredient absent at this slot.
+        smoothed_timeline = [
+            smoothed if raw > 0.0 else 0.0
+            for raw, smoothed in zip(raw_timeline, smoothed_timeline)
+        ]
         timeline_stability = temporal_stability(resolved_time_window_hours, raw_timeline)
         timeline_consistency = temporal_consistency(raw_timeline)
         temporal_component = _clamp_unit_interval((0.6 * timeline_stability) + (0.4 * timeline_consistency))
@@ -786,18 +791,18 @@ def _evaluate_time_slot(
             point_evaluation.probabilities[phenomenon]
             for point_evaluation in grid_evaluations
         ]
-        weighted_probabilities = apply_spatial_weights(
+        weights = spatial_weights(
             phenomenon,
-            raw_probabilities,
             samples,
             radius_km=radii_by_phenomenon[phenomenon],
             solar_azimuth=source_azimuth,
         )
         spatial_context = build_spatial_context(
             phenomenon,
-            weighted_probabilities,
+            raw_probabilities,
             radius_km=radii_by_phenomenon[phenomenon],
             aggregation=aggregation_for(phenomenon),
+            weights=weights,
         )
         center_evaluation = _center_point_evaluation(grid_evaluations)
         confidence_components = _base_confidence_components(
@@ -809,7 +814,7 @@ def _evaluate_time_slot(
             spatial_consistency=float(spatial_context.get("spatial_consistency", 0.0)),
         )
         phenomenon_evaluations[phenomenon] = PhenomenonTimeEvaluation(
-            probability=aggregate_probabilities(weighted_probabilities, aggregation_for(phenomenon)),
+            probability=aggregate_probabilities(raw_probabilities, aggregation_for(phenomenon), weights=weights),
             spatial_context=spatial_context,
             reason_features=dict(center_evaluation.features),
             confidence_components=confidence_components,
@@ -1310,7 +1315,7 @@ def _cza_reason(features: dict[str, float]) -> str:
 def _circumhorizontal_arc_reason(features: dict[str, float]) -> str:
     if not _thin_icy_cirrus_available(features):
         return "Circumhorizontal arc potential is limited by weak thin-cirrus or ice-presence support."
-    if float(features.get("solar_elevation", math.nan)) >= 58.0:
+    if float(features.get("solar_elevation", math.nan)) > 58.0:
         return "High sun with thin icy cirrus favors a circumhorizontal arc."
     return "The sun is not yet high enough for a strong circumhorizontal arc signal."
 
@@ -1356,6 +1361,9 @@ def _crepuscular_rays_reason(features: dict[str, float]) -> str:
 
 
 def _rainbow_reason(features: dict[str, float]) -> str:
+    elevation = float(features.get("source_elevation", features.get("solar_elevation", math.nan)))
+    if not 0.0 <= elevation < 42.0:
+        return "The light source is outside the above-horizon primary-rainbow elevation range (0 to 42 degrees)."
     if float(features.get("precipitation", 0.0)) <= 0.1:
         return "Rainbow potential is limited by weak precipitation."
     if _sun_obscured(features):
@@ -1364,6 +1372,8 @@ def _rainbow_reason(features: dict[str, float]) -> str:
 
 
 def _moonbow_reason(features: dict[str, float]) -> str:
+    if not 0.0 <= float(features.get("source_elevation", math.nan)) < 42.0:
+        return "The moon is outside the above-horizon primary-bow elevation range (0 to 42 degrees)."
     if float(features.get("precipitation", 0.0)) <= 0.1:
         return "Moonbow potential is limited by weak precipitation."
     if float(features.get("moon_phase", 0.0)) < 0.5 or float(features.get("sky_darkness", 0.0)) < 0.4:
@@ -1374,14 +1384,11 @@ def _moonbow_reason(features: dict[str, float]) -> str:
 
 
 def _fogbow_reason(features: dict[str, float]) -> str:
-    fog_signal = max(
-        float(features.get("fog_presence", 0.0)),
-        math.exp(-((float(features.get("surface_visibility", math.nan)) - 0.8) ** 2) / (2.0 * (0.8**2)))
-        if math.isfinite(float(features.get("surface_visibility", math.nan)))
-        else 0.0,
-    )
-    if fog_signal < 0.35:
-        return "Fogbow potential is limited by weak fog or mist support."
+    if not 0.0 <= float(features.get("solar_elevation", math.nan)) < 42.0:
+        return "The sun is outside the above-horizon fogbow elevation range (0 to 42 degrees)."
+    fog_signal = float(features.get("fog_presence", math.nan))
+    if not math.isfinite(fog_signal) or fog_signal <= 0.0:
+        return "Fog or mist evidence is missing; low visibility alone does not identify water droplets."
     if float(features.get("precipitation", 0.0)) > 0.6:
         return "Fog or mist is present, but stronger precipitation suppresses fogbow conditions."
     if _sun_obscured(features):
@@ -1392,6 +1399,8 @@ def _fogbow_reason(features: dict[str, float]) -> str:
 def _lunar_corona_reason(features: dict[str, float]) -> str:
     cloud_optical_thickness = float(features.get("cloud_optical_thickness", 0.0))
     cloud_variability = float(features.get("cloud_variability", 0.3))
+    if not math.isfinite(cloud_optical_thickness) or cloud_optical_thickness <= 0.0:
+        return "There is no usable thin-cloud optical-depth evidence for a lunar corona."
     if _source_obscured(features):
         return "Thin cloud may be present, but the moon is too dim or obscured for a strong lunar corona."
     if 0.1 <= cloud_optical_thickness <= 0.6 and 0.1 <= cloud_variability <= 0.6:

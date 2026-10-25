@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Mapping
 
 from optics_models.combination import ModelComponents, combine_log
+from optics_models.rainbow import PRIMARY_BOW_MAX_ELEVATION
 from optics_models.probability import (
     DEFAULT_WEIGHTS,
     ModelWeights,
@@ -91,26 +92,28 @@ def predict_fogbow(
     """Predict the probability of a fogbow."""
 
     fog_presence = unit_feature(features, "fog_presence")
-    surface_visibility = nonnegative_feature(features, "surface_visibility")
-    low_visibility_support = gaussian(
-        surface_visibility,
-        mu=parameters.visibility_mu,
-        sigma=parameters.visibility_sigma,
+    surface_visibility = numeric_feature(features, "surface_visibility")
+    visibility_support = (
+        gaussian(surface_visibility, mu=parameters.visibility_mu, sigma=parameters.visibility_sigma)
+        if math.isfinite(surface_visibility) and surface_visibility >= 0.0
+        else 1.0
     )
     dry_air_support = 1.0 - sigmoid(
         nonnegative_feature(features, "precipitation"),
         k=parameters.rain_suppression_k,
         x0=parameters.rain_suppression_x0,
     )
-    physical = max(fog_presence, low_visibility_support) * max(0.0, dry_air_support)
+    # Low visibility also occurs in dust, smoke, and haze; require droplet evidence.
+    physical = fog_presence * visibility_support * max(0.0, dry_air_support)
     visibility = unit_feature(features, "sun_visible") * math.exp(
         -(parameters.cloud_penalty * unit_feature(features, "cloud_optical_thickness"))
     )
+    solar_elevation = numeric_feature(features, "solar_elevation")
     geometry = gaussian(
-        numeric_feature(features, "solar_elevation"),
+        solar_elevation,
         mu=parameters.geometry_mu,
         sigma=parameters.geometry_sigma,
-    )
+    ) if 0.0 <= solar_elevation < PRIMARY_BOW_MAX_ELEVATION else 0.0
     return combine_log(
         physical,
         visibility,

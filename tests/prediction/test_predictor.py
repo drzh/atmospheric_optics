@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import patch
 
+import pytest
+
 from prediction.pipeline import PHENOMENA, predict_all
 from weather_sources.snapshots import SourceAttribution, WeatherSnapshot
 from optics_models.combination import ModelComponents
@@ -17,6 +19,65 @@ def _phenomena_by_id(payload: dict[str, object]) -> dict[str, dict[str, object]]
         if isinstance(entry, dict) and isinstance(entry.get("id"), str):
             result[entry["id"]] = entry
     return result
+
+
+@pytest.mark.parametrize(
+    "phenomenon,weather,elevation,should_alert",
+    [
+        ("halo", {"cloud_cover_high": 1.0, "cloud_optical_thickness": 0.02, "ice_cloud_fraction": 1.0}, 20.0, True),
+        ("rainbow", {"cloud_cover_high": 0.2, "cloud_optical_thickness": 0.05, "precipitation": 2.0}, 20.0, True),
+        ("halo", {"cloud_cover_high": 1.0, "cloud_optical_thickness": 1.0, "ice_cloud_fraction": 1.0}, 20.0, False),
+        ("rainbow", {"cloud_cover_high": 0.0, "precipitation": 0.0}, 20.0, False),
+        ("halo", {"cloud_cover_high": 1.0, "cloud_optical_thickness": 0.02, "ice_cloud_fraction": 1.0}, -25.0, False),
+        ("rainbow", {"cloud_cover_high": 0.2, "precipitation": 2.0}, -25.0, False),
+    ],
+)
+def test_spatial_pipeline_can_trigger_alerts_only_in_favorable_conditions(phenomenon, weather, elevation, should_alert) -> None:
+    snapshot = WeatherSnapshot(weather=weather, sources=(SourceAttribution(name="goes-east", timestamp="20261024 180000z"),))
+    with patch("prediction.pipeline.get_weather_snapshot", return_value=snapshot), patch(
+        "prediction.pipeline.get_solar_position", return_value={"elevation": elevation, "azimuth": 180.0}
+    ):
+        common = dict(
+            lat=32.847, lon=-96.806, mode="observed", illumination="solar", phenomena=(phenomenon,),
+            at_time=datetime(2026, 10, 24, 18, tzinfo=timezone.utc),
+        )
+        spatial = _phenomena_by_id(predict_all(**common))[phenomenon]
+        center = _phenomena_by_id(predict_all(**common, lightweight=True))[phenomenon]
+
+    assert spatial["peak"]["probability"] == pytest.approx(center["peak"]["probability"])
+    assert (spatial["peak"]["probability"] >= 0.8) is should_alert
+
+
+@pytest.mark.parametrize("phenomenon", ["rainbow", "cza"])
+def test_temporal_smoothing_does_not_create_support_in_an_impossible_slot(phenomenon) -> None:
+    start = datetime(2026, 10, 24, 18, tzinfo=timezone.utc)
+
+    def weather_at_time(lat, lon, **kwargs):
+        future = kwargs["at_time"] > start
+        return WeatherSnapshot(
+            weather={
+                "cloud_cover_high": 1.0, "cloud_optical_thickness": 0.02,
+                "ice_cloud_fraction": 1.0, "precipitation": 2.0 if future else 0.0,
+            },
+            sources=(SourceAttribution(name="gfs", timestamp="20261024 12z f006"),),
+        )
+
+    def sun_at_time(lat, lon, time):
+        elevation = 35.0 if phenomenon == "cza" and time == start else 22.0
+        return {"elevation": elevation, "azimuth": 180.0}
+
+    with patch("prediction.pipeline.get_weather_snapshot", side_effect=weather_at_time), patch(
+        "prediction.pipeline.get_solar_position", side_effect=sun_at_time
+    ):
+        result = predict_all(
+            32.847, -96.806, mode="forecast", illumination="solar", phenomena=(phenomenon,),
+            at_time=start, time_window_hours=(0, 1), lightweight=True,
+        )
+    prediction = _phenomena_by_id(result)[phenomenon]
+    assert prediction["current"]["probability"] == 0.0
+    assert prediction["timeline"][0]["probability"] == 0.0
+    assert prediction["peak"]["probability"] > 0.8
+    assert prediction["peak"]["time"] == "2026-10-24T19:00:00Z"
 
 
 def test_predict_all_returns_structured_payload() -> None:

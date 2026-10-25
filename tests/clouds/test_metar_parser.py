@@ -39,3 +39,17 @@ def test_parse_metar_falls_back_to_raw_cloud_and_weather_tokens() -> None:
     assert parsed.layers[0].convective_type == "CB"
     assert parsed.precipitation is True
     assert parsed.thunderstorm is True
+
+
+@pytest.mark.parametrize("station", ["KRAL", "KBRD", "TSRA"])
+def test_station_names_and_remarks_are_not_current_weather(station) -> None:
+    parsed = parse_metar({"rawOb": f"METAR {station} 250353Z 00000KT 10SM CLR 20/10 A3000 RMK RAB05E15 FG DSNT"})
+    assert parsed.weather_codes == ()
+    assert not parsed.precipitation
+    assert not parsed.fog
+
+
+def test_structured_combined_weather_codes_preserve_rain_snow_and_thunder() -> None:
+    parsed = parse_metar({"rawOb": "METAR KDAL 250353Z 00000KT 3SM CLR 20/10 A3000", "wxString": "-TSRASN BR"})
+    assert {"RA", "SN", "TS", "BR"}.issubset(parsed.weather_codes)
+    assert parsed.precipitation and parsed.thunderstorm

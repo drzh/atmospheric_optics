@@ -157,38 +157,63 @@ def apply_spatial_weights(
     radius_km: float,
     solar_azimuth: float = math.nan,
 ) -> list[float]:
-    """Apply distance and optional directional weighting to point probabilities."""
+    """Return weighted contributions; aggregate raw values with separate weights."""
 
     values = _normalized_probabilities(probabilities)
     if len(values) != len(samples):
         raise ValueError("probabilities and samples must contain the same number of elements")
 
+    weights = spatial_weights(phenomenon, samples, radius_km=radius_km, solar_azimuth=solar_azimuth)
+    return [
+        _clamp_unit_interval(probability * weight) if math.isfinite(probability) else math.nan
+        for probability, weight in zip(values, weights)
+    ]
+
+
+def spatial_weights(
+    phenomenon: str,
+    samples: Sequence[SpatialSample],
+    *,
+    radius_km: float,
+    solar_azimuth: float = math.nan,
+) -> list[float]:
+    """Return sampling weights separately from the model probabilities."""
+
     sigma_km = max(radius_km / 2.0, 1.0e-6)
-    weighted_probabilities: list[float] = []
-    for sample, probability in zip(samples, values):
-        if not math.isfinite(probability):
-            weighted_probabilities.append(math.nan)
-            continue
+    weights: list[float] = []
+    for sample in samples:
         weight = spatial_weight(sample.distance_km, sigma_km)
         if phenomenon in SOURCE_FACING_DIRECTIONAL_PHENOMENA:
             weight *= directional_weight(sample.dx_km, sample.dy_km, solar_azimuth)
         elif phenomenon in ANTI_SOURCE_DIRECTIONAL_PHENOMENA:
             weight *= directional_weight(sample.dx_km, sample.dy_km, solar_azimuth + 180.0)
-        weighted_probabilities.append(_clamp_unit_interval(probability * weight))
-    return weighted_probabilities
+        weights.append(_clamp_unit_interval(weight))
+    return weights
 
 
-def aggregate_probabilities(probabilities: Sequence[float], method: str = DEFAULT_SPATIAL_AGGREGATION) -> float:
-    """Blend weighted mean and weighted max into one spatially aware signal."""
+def aggregate_probabilities(
+    probabilities: Sequence[float],
+    method: str = DEFAULT_SPATIAL_AGGREGATION,
+    *,
+    weights: Sequence[float] | None = None,
+) -> float:
+    """Blend a normalized weighted mean with a distance-weighted local peak."""
 
     del method
     values = _normalized_probabilities(probabilities)
-    valid_values = [value for value in values if math.isfinite(value)]
-    if not valid_values:
+    sample_weights = _normalized_weights(weights, len(values))
+    valid_pairs = [
+        (value, weight)
+        for value, weight in zip(values, sample_weights)
+        if math.isfinite(value) and weight > 0
+    ]
+    if not valid_pairs:
         return 0.0
 
-    mean_probability = sum(valid_values) / len(valid_values)
-    max_probability = max(valid_values)
+    total_weight = sum(weight for _, weight in valid_pairs)
+    mean_probability = sum(value * weight for value, weight in valid_pairs) / total_weight
+    max_weight = max(weight for _, weight in valid_pairs)
+    max_probability = max(value * (weight / max_weight) for value, weight in valid_pairs)
     return _clamp_unit_interval((0.6 * mean_probability) + (0.4 * max_probability))
 
 
@@ -198,11 +223,18 @@ def spatial_context(
     *,
     radius_km: float | None = None,
     aggregation: str | None = None,
+    weights: Sequence[float] | None = None,
 ) -> dict[str, float | str]:
-    """Summarize the current weighted spatial field for one phenomenon."""
+    """Summarize model probabilities without treating distance as evidence of bad weather."""
 
     values = _normalized_probabilities(probabilities)
-    valid_values = [value for value in values if math.isfinite(value)]
+    sample_weights = _normalized_weights(weights, len(values))
+    valid_pairs = [
+        (value, weight)
+        for value, weight in zip(values, sample_weights)
+        if math.isfinite(value) and weight > 0
+    ]
+    valid_values = [value for value, _ in valid_pairs]
     resolved_radius_km = radius_km if radius_km is not None else radius_for(phenomenon)
     resolved_aggregation = aggregation if aggregation is not None else aggregation_for(phenomenon)
     if not valid_values:
@@ -220,10 +252,11 @@ def spatial_context(
         }
 
     center_probability = _center_probability(values, fallback=valid_values[len(valid_values) // 2])
-    mean_probability = sum(valid_values) / len(valid_values)
+    total_weight = sum(weight for _, weight in valid_pairs)
+    mean_probability = sum(value * weight for value, weight in valid_pairs) / total_weight
     max_probability = max(valid_values)
     min_probability = min(valid_values)
-    variance = _variance(valid_values)
+    variance = sum(weight * (value - mean_probability) ** 2 for value, weight in valid_pairs) / total_weight
     return {
         "radius_km": resolved_radius_km,
         "aggregation": resolved_aggregation,
@@ -273,6 +306,18 @@ def _normalized_probabilities(probabilities: Sequence[float]) -> list[float]:
     return values
 
 
+def _normalized_weights(weights: Sequence[float] | None, count: int) -> list[float]:
+    if weights is None:
+        return [1.0] * count
+    if len(weights) != count:
+        raise ValueError("probabilities and weights must contain the same number of elements")
+    normalized = []
+    for weight in weights:
+        numeric_weight = float(weight)
+        normalized.append(numeric_weight if math.isfinite(numeric_weight) and numeric_weight > 0 else 0.0)
+    return normalized
+
+
 def _center_probability(values: Sequence[float], *, fallback: float) -> float:
     if len(values) > 4 and math.isfinite(values[4]):
         return _clamp_unit_interval(values[4])
@@ -280,13 +325,6 @@ def _center_probability(values: Sequence[float], *, fallback: float) -> float:
         if math.isfinite(value):
             return _clamp_unit_interval(value)
     return _clamp_unit_interval(fallback)
-
-
-def _variance(values: Sequence[float]) -> float:
-    if not values:
-        return 0.0
-    mean_value = sum(values) / len(values)
-    return sum((value - mean_value) ** 2 for value in values) / len(values)
 
 
 def _clamp_latitude(latitude: float) -> float:
