@@ -660,12 +660,15 @@ def test_get_goes_observation_cleans_temporary_download_directory_when_not_persi
     monkeypatch.setattr(weather, "_find_latest_goes_object", fake_find_latest_goes_object)
     monkeypatch.setattr(weather, "_download_goes_object", fake_download_goes_object)
     monkeypatch.setattr(weather, "_extract_goes_cloud_cover_sample", lambda path, lat, lon: (0.8, (0.8, 0.7, 0.75)))
+    monkeypatch.setattr(weather, "_extract_goes_total_cloud_cover_sample", lambda path, lat, lon: (0.9, (0.9, 0.8)))
     monkeypatch.setattr(weather, "_extract_goes_cloud_optical_thickness", lambda path, lat, lon: 0.4)
 
     observation = weather._get_goes_observation(32.8, -96.8, download_dir=None)
 
     assert observation.downloaded_path is None
     assert observation.high_cloud_cover == pytest.approx(0.8)
+    assert observation.total_cloud_cover == pytest.approx(0.9)
+    assert observation.total_cloud_cover_grid == pytest.approx((0.9, 0.8))
     assert observation.cloud_optical_thickness == pytest.approx(0.4)
     assert captured_dirs
     assert all(not captured_dir.exists() for captured_dir in captured_dirs)

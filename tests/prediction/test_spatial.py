@@ -5,6 +5,7 @@ import pytest
 from prediction.spatial_sampling import (
     SpatialSample,
     adaptive_radius,
+    directional_cloud_context,
     adjust_confidence,
     aggregate_probabilities,
     apply_spatial_weights,
@@ -131,3 +132,15 @@ def test_missing_points_are_excluded_from_weight_normalization() -> None:
     assert aggregate_probabilities([0.9], weights=[0.0]) == 0.0
     with pytest.raises(ValueError, match="same number"):
         aggregate_probabilities([0.9], weights=[1.0, 1.0])
+
+
+def test_directional_cloud_context_rotates_with_sun_and_requires_both_sides() -> None:
+    samples = generate_samples(0.0, 0.0, 30.0)
+    clouds = [0.5 if sample.dx_km > 0 else 0.0 for sample in samples]
+    east = directional_cloud_context(samples, clouds, solar_azimuth=90.0)
+    west = directional_cloud_context(samples, clouds, solar_azimuth=270.0)
+    assert east == {"source_cloud_fraction": 0.5, "antisolar_cloud_fraction": 0.0}
+    assert west == {"source_cloud_fraction": 0.0, "antisolar_cloud_fraction": 0.5}
+    missing = directional_cloud_context(samples, [float("nan") if sample.dx_km < 0 else 0.5 for sample in samples], solar_azimuth=90.0)
+    assert missing["source_cloud_fraction"] == pytest.approx(0.5)
+    assert missing["antisolar_cloud_fraction"] != missing["antisolar_cloud_fraction"]

@@ -47,6 +47,28 @@ DEFAULT_CREPUSCULAR_RAYS_PARAMETERS = CrepuscularRaysParameters()
 DEFAULT_FOGBOW_PARAMETERS = FogbowParameters()
 
 
+def predict_anticrepuscular_rays(
+    features: Mapping[str, float],
+    parameters: CrepuscularRaysParameters = DEFAULT_CREPUSCULAR_RAYS_PARAMETERS,
+    *,
+    return_components: bool = False,
+) -> float | ModelComponents:
+    """Combine source-side cloud gaps with a clearer opposite viewing direction."""
+
+    source_cloud = unit_feature(features, "source_cloud_fraction")
+    opposite_cloud = numeric_feature(features, "antisolar_cloud_fraction")
+    # A mixture of cloud and gaps supplies the normalized shadow-pattern support.
+    physical = 4.0 * source_cloud * (1.0 - source_cloud)
+    clearance = 1.0 - opposite_cloud if math.isfinite(opposite_cloud) and 0.0 <= opposite_cloud <= 1.0 else 0.0
+    visibility = (
+        clearance * unit_feature(features, "sun_visible")
+        * math.exp(-parameters.cloud_visibility_penalty * unit_feature(features, "cloud_optical_thickness"))
+    )
+    elevation = numeric_feature(features, "solar_elevation")
+    geometry = gaussian(elevation, mu=parameters.geometry_mu, sigma=parameters.geometry_sigma) if -6.0 <= elevation <= 90.0 else 0.0
+    return combine_log(physical, visibility, geometry, parameters.weights, return_components=return_components)
+
+
 def predict_crepuscular_rays(
     features: Mapping[str, float],
     parameters: CrepuscularRaysParameters = DEFAULT_CREPUSCULAR_RAYS_PARAMETERS,

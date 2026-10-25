@@ -23,6 +23,9 @@ SPATIAL_RADIUS_KM: dict[str, float] = {
     "paraselenae": 40.0,
     "lunar_pillar": 15.0,
     "lunar_corona": 15.0,
+    "solar_corona": 15.0,
+    "secondary_rainbow": 25.0,
+    "anticrepuscular_rays": 30.0,
     "moonbow": 25.0,
 }
 SOURCE_FACING_DIRECTIONAL_PHENOMENA = {
@@ -33,6 +36,8 @@ SOURCE_FACING_DIRECTIONAL_PHENOMENA = {
 ANTI_SOURCE_DIRECTIONAL_PHENOMENA = {
     "rainbow",
     "moonbow",
+    "secondary_rainbow",
+    "anticrepuscular_rays",
 }
 DIRECTIONAL_PHENOMENA = SOURCE_FACING_DIRECTIONAL_PHENOMENA | ANTI_SOURCE_DIRECTIONAL_PHENOMENA
 
@@ -147,6 +152,30 @@ def directional_weight(dx_km: float, dy_km: float, solar_azimuth: float) -> floa
     angle = math.atan2(dy_km, dx_km)
     solar_angle = math.radians(90.0 - solar_azimuth)
     return _clamp_unit_interval(0.5 + (0.5 * math.cos(angle - solar_angle)))
+
+
+def directional_cloud_context(
+    samples: Sequence[SpatialSample], cloud_fractions: Sequence[float], *, solar_azimuth: float,
+) -> dict[str, float]:
+    """Measure source-side obstruction separately from the antisolar view."""
+
+    if len(samples) != len(cloud_fractions):
+        raise ValueError("samples and cloud_fractions must contain the same number of elements")
+    sides: dict[str, list[tuple[float, float]]] = {"source_cloud_fraction": [], "antisolar_cloud_fraction": []}
+    if math.isfinite(solar_azimuth):
+        azimuth = math.radians(solar_azimuth)
+        for sample, fraction in zip(samples, cloud_fractions):
+            if sample.distance_km <= 0.0 or not math.isfinite(fraction) or not 0.0 <= fraction <= 1.0:
+                continue
+            projection = (sample.dx_km * math.sin(azimuth) + sample.dy_km * math.cos(azimuth)) / sample.distance_km
+            if abs(projection) < 1e-6:
+                continue
+            side = "source_cloud_fraction" if projection > 0.0 else "antisolar_cloud_fraction"
+            sides[side].append((fraction, abs(projection)))
+    return {
+        side: sum(value * weight for value, weight in pairs) / sum(weight for _, weight in pairs) if pairs else math.nan
+        for side, pairs in sides.items()
+    }
 
 
 def apply_spatial_weights(

@@ -1,6 +1,6 @@
 # Additional forecast phenomena — feasibility review, October 24, 2026
 
-**Solar corona is the strongest first addition. Anticrepuscular rays and secondary rainbows are useful follow-on candidates.** This is an assessment of forecast feasibility and implementation requirements; the production registry still contains the existing 14 phenomena.
+**Implementation update:** solar corona, anticrepuscular rays, and secondary rainbows are now registered forecasts, bringing the combined output to 17 entries. See the [implementation guide](new-phenomena-implementation-2026-10-24.md). The assessment below records the investigation that preceded implementation.
 
 The recommendations below are engineering judgments based on the present code and the cited physical descriptions. Being able to compute a suitability score does not establish that the score is a calibrated event probability.
 
@@ -62,4 +62,4 @@ These synthetic cases confirm that the existing components can provide the desir
 
 The next data improvement worth evaluating is NOAA's [GOES cloud effective particle-size retrieval](https://www.goes-r.gov/products/baseline-cloud-particle-size-dist.html), which is retrieved alongside optical depth. Its [product guide](https://www.goes-r.gov/users/docs/PUG-L2%2B-vol5.pdf) describes effective radius and quality flags, including degraded conditions near the terminator. This is a candidate additional input for diffraction models, not a substitute for an observed particle-size distribution or outcome validation. Its operational availability and retrieval quality would need checking during implementation.
 
-The investigation is complete. Its deliverable is this feasibility assessment and implementation path; the existing forecast IDs and operational alert selection have not been expanded by the study.
+The initial investigation was completed as a feasibility assessment. Its first three candidates have subsequently been implemented; the remaining candidates retain the data and validation limitations described above.

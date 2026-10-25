@@ -16,6 +16,7 @@ from prediction.spatial_sampling import (
     adaptive_radius,
     aggregate_probabilities,
     aggregation_for,
+    directional_cloud_context,
     generate_samples,
     radius_for,
     spatial_context as build_spatial_context,
@@ -36,6 +37,7 @@ from weather_sources.snapshots import (
 )
 from features.extraction import compute_features
 from optics_models.combination import ModelComponents
+from optics_models.corona import predict_solar_corona
 from optics_models.circumzenithal_arc import predict_cza
 from optics_models.halo import predict_halo, predict_parhelia
 from optics_models.ice_crystals import (
@@ -44,8 +46,8 @@ from optics_models.ice_crystals import (
     predict_upper_tangent_arc,
 )
 from optics_models.lunar import predict_lunar_corona
-from optics_models.rainbow import predict_rainbow
-from optics_models.scattering import predict_crepuscular_rays, predict_fogbow
+from optics_models.rainbow import predict_rainbow, predict_secondary_rainbow
+from optics_models.scattering import predict_anticrepuscular_rays, predict_crepuscular_rays, predict_fogbow
 from astronomy.lunar import get_lunar_position
 from astronomy.solar import get_solar_position
 
@@ -66,6 +68,9 @@ SOLAR_PHENOMENA: tuple[str, ...] = (
     "crepuscular_rays",
     "rainbow",
     "fogbow",
+    "solar_corona",
+    "anticrepuscular_rays",
+    "secondary_rainbow",
 )
 LUNAR_PHENOMENA: tuple[str, ...] = (
     "lunar_halo",
@@ -91,6 +96,9 @@ PHENOMENON_METADATA: dict[str, dict[str, str]] = {
     "lunar_pillar": {"label": "Lunar Pillar", "category": "ice_crystal"},
     "lunar_corona": {"label": "Lunar Corona", "category": "water_droplet"},
     "moonbow": {"label": "Moonbow", "category": "water_droplet"},
+    "solar_corona": {"label": "Solar Corona", "category": "water_droplet"},
+    "anticrepuscular_rays": {"label": "Anticrepuscular Rays", "category": "cloud_shadow"},
+    "secondary_rainbow": {"label": "Secondary Rainbow", "category": "water_droplet"},
 }
 SOURCE_METADATA: dict[str, dict[str, str]] = {
     "goes-east": {"label": "GOES East", "kind": "satellite"},
@@ -100,6 +108,9 @@ SOURCE_METADATA: dict[str, dict[str, str]] = {
     "gfs": {"label": "GFS", "kind": "forecast_model"},
 }
 PHENOMENON_FEATURES: dict[str, tuple[str, ...]] = {
+    "solar_corona": ("source_elevation", "source_visible", "cloud_optical_thickness", "cloud_variability"),
+    "anticrepuscular_rays": ("source_cloud_fraction", "antisolar_cloud_fraction", "solar_elevation", "sun_visible", "cloud_optical_thickness"),
+    "secondary_rainbow": ("precipitation", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
     "halo": ("ice_presence", "thin_cirrus", "sun_visible", "cloud_optical_thickness", "solar_elevation"),
     "parhelia": (
         "ice_presence",
@@ -404,6 +415,10 @@ def _predict_for_illumination(
         }
         if debug and current_evaluation.debug:
             current_payload["debug"] = _round_numeric_mapping(current_evaluation.debug)
+        if phenomenon in {"solar_corona", "secondary_rainbow", "anticrepuscular_rays"}:
+            azimuth = _numeric_or_nan(current_evaluation.reason_features.get("solar_azimuth"))
+            if math.isfinite(azimuth):
+                current_payload["viewing_azimuth"] = _round_output_float((azimuth + (0.0 if phenomenon == "solar_corona" else 180.0)) % 360.0)
         result["phenomena"].append(
             {
                 "id": phenomenon,
@@ -603,6 +618,9 @@ def _prediction_functions() -> dict[str, PredictionFunction]:
         "lunar_pillar": predict_sun_pillar,
         "lunar_corona": predict_lunar_corona,
         "moonbow": predict_rainbow,
+        "solar_corona": predict_solar_corona,
+        "anticrepuscular_rays": predict_anticrepuscular_rays,
+        "secondary_rainbow": predict_secondary_rainbow,
     }
 
 
@@ -791,6 +809,14 @@ def _evaluate_time_slot(
             point_evaluation.probabilities[phenomenon]
             for point_evaluation in grid_evaluations
         ]
+        reason_features = dict(center_point_evaluation.features)
+        if phenomenon == "anticrepuscular_rays":
+            cloud_context = directional_cloud_context(
+                samples, [evaluation.features.get("cloud_cover_total", math.nan) for evaluation in grid_evaluations],
+                solar_azimuth=source_azimuth,
+            )
+            reason_features.update(cloud_context)
+            raw_probabilities = [predictors[phenomenon]({**evaluation.features, **cloud_context}) for evaluation in grid_evaluations]
         weights = spatial_weights(
             phenomenon,
             samples,
@@ -804,10 +830,12 @@ def _evaluate_time_slot(
             aggregation=aggregation_for(phenomenon),
             weights=weights,
         )
+        if phenomenon == "anticrepuscular_rays":
+            spatial_context.update({key: value for key, value in cloud_context.items() if math.isfinite(value)})
         center_evaluation = _center_point_evaluation(grid_evaluations)
         confidence_components = _base_confidence_components(
             phenomenon,
-            features=center_evaluation.features,
+            features=reason_features,
             weather=center_evaluation.weather,
             source_names=center_source_names,
             predictor=predictors[phenomenon],
@@ -816,9 +844,13 @@ def _evaluate_time_slot(
         phenomenon_evaluations[phenomenon] = PhenomenonTimeEvaluation(
             probability=aggregate_probabilities(raw_probabilities, aggregation_for(phenomenon), weights=weights),
             spatial_context=spatial_context,
-            reason_features=dict(center_evaluation.features),
+            reason_features=reason_features,
             confidence_components=confidence_components,
-            debug=_debug_payload(center_evaluation.debug_components.get(phenomenon)),
+            debug=_debug_payload(
+                _model_components_for_debug(predictors[phenomenon], reason_features)
+                if include_debug and phenomenon == "anticrepuscular_rays"
+                else center_evaluation.debug_components.get(phenomenon)
+            ),
         )
 
     return TimeSlotEvaluation(
@@ -1205,6 +1237,9 @@ def _perturb_feature_value(feature_name: str, value: float, delta: float) -> flo
     perturbed_value = value + delta
     if feature_name in {
         "cirrus_coverage",
+        "cloud_cover_total",
+        "source_cloud_fraction",
+        "antisolar_cloud_fraction",
         "cloud_optical_thickness",
         "condensate_proxy",
         "humidity_250",
@@ -1240,6 +1275,37 @@ def _numeric_or_nan(value: object) -> float:
 
 
 def _build_reason(phenomenon: str, features: dict[str, float], probability: float) -> str:
+    if phenomenon == "solar_corona":
+        if not 0.0 <= float(features.get("source_elevation", math.nan)) <= 90.0:
+            return "The sun is below the horizon; solar-corona viewing conditions are unavailable."
+        if not math.isfinite(float(features.get("cloud_optical_thickness", math.nan))) or float(features.get("cloud_optical_thickness", 0.0)) <= 0.0:
+            return "Thin-cloud optical-depth evidence is missing for a solar corona."
+        if _sun_obscured(features):
+            return "Cloud thickness or limited sunlight suppresses solar-corona visibility."
+        if not 0.1 <= float(features.get("cloud_optical_thickness", 0.0)) <= 0.6:
+            return "Cloud thickness is outside the favored solar-corona range; particle-size uniformity remains uncertain."
+        return "Thin cloud and visible sunlight support solar-corona conditions; particle-size uniformity remains uncertain."
+    if phenomenon == "anticrepuscular_rays":
+        source_cloud = float(features.get("source_cloud_fraction", math.nan))
+        opposite_cloud = float(features.get("antisolar_cloud_fraction", math.nan))
+        if not math.isfinite(source_cloud) or not math.isfinite(opposite_cloud):
+            return "Cloud samples toward the sun and the opposite horizon are required; center-only sampling cannot establish them."
+        if not -6.0 <= float(features.get("solar_elevation", math.nan)) <= 90.0:
+            return "The sun is too far below the horizon for the modeled cloud-shadow rays."
+        if source_cloud <= 0.0 or source_cloud >= 1.0:
+            return "The sunward cloud field lacks the mixture of cloud and gaps needed for distinct shadow rays."
+        if opposite_cloud >= 0.7:
+            return "Cloud toward the opposite horizon limits the view of anticrepuscular rays."
+        return "Low sunlight, sunward cloud gaps, and a clearer opposite horizon support anticrepuscular-ray conditions."
+    if phenomenon == "secondary_rainbow":
+        elevation = float(features.get("source_elevation", math.nan))
+        if not 0.0 <= elevation < 54.0:
+            return "The sun is outside the above-horizon secondary-bow elevation range (0 to 54 degrees)."
+        if float(features.get("precipitation", 0.0)) <= 0.1:
+            return "Secondary-rainbow conditions require liquid precipitation and visible sunlight."
+        if _sun_obscured(features):
+            return "Rain is present, but cloud attenuation or limited sunlight suppresses the fainter secondary bow."
+        return "Rain and sunlight support a secondary bow opposite the sun; its fainter colors need good contrast."
     if phenomenon == "halo":
         return _halo_reason(features)
     if phenomenon == "lunar_halo":

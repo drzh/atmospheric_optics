@@ -86,6 +86,7 @@ def compute_features(
 
     features = {
         "cirrus_coverage": cirrus_coverage,
+        "cloud_cover_total": _normalize_fraction(weather.get("cloud_cover_total")),
         "cloud_optical_thickness": cloud_optical_thickness,
         "condensate_proxy": condensate_proxy,
         "temp_250": _coerce_float(weather.get("temp_250")),

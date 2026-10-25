@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
 from typing import Mapping
 
-from optics_models.combination import ModelComponents, combine_log
-from optics_models.probability import DEFAULT_WEIGHTS, ModelWeights, gaussian, numeric_feature, unit_feature
+from optics_models.combination import ModelComponents
+from optics_models.corona import CoronaParameters, predict_corona
+from optics_models.probability import unit_feature
 
 
-@dataclass(frozen=True)
-class LunarCoronaParameters:
-    optical_thickness_mu: float = 0.3
-    optical_thickness_sigma: float = 0.2
-    variability_mu: float = 0.3
-    variability_sigma: float = 0.2
-    cloud_penalty: float = 0.3
-    weights: ModelWeights = field(default_factory=lambda: DEFAULT_WEIGHTS)
+LunarCoronaParameters = CoronaParameters
 
 
 DEFAULT_LUNAR_CORONA_PARAMETERS = LunarCoronaParameters()
@@ -31,27 +23,6 @@ def predict_lunar_corona(
 ) -> float | ModelComponents:
     """Predict the probability of a lunar corona."""
 
-    optical_thickness = numeric_feature(features, "cloud_optical_thickness")
-    physical = gaussian(
-        unit_feature(features, "cloud_optical_thickness"),
-        mu=parameters.optical_thickness_mu,
-        sigma=parameters.optical_thickness_sigma,
-    ) * gaussian(
-        unit_feature(features, "cloud_variability", default=0.3),
-        mu=parameters.variability_mu,
-        sigma=parameters.variability_sigma,
-    )
-    if not math.isfinite(optical_thickness) or optical_thickness <= 0.0:
-        physical = 0.0
-    visibility = (
-        unit_feature(features, "source_visible", default=unit_feature(features, "moon_visible"))
-        * math.exp(-(parameters.cloud_penalty * unit_feature(features, "cloud_optical_thickness")))
-        * unit_feature(features, "brightness_factor", default=1.0)
-    )
-    return combine_log(
-        physical,
-        visibility,
-        1.0,
-        parameters.weights,
-        return_components=return_components,
-    )
+    lunar_features = dict(features)
+    lunar_features["source_visible"] = unit_feature(features, "source_visible", default=unit_feature(features, "moon_visible"))
+    return predict_corona(lunar_features, parameters, return_components=return_components)

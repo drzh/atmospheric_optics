@@ -17,13 +17,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Iterable
 
 import requests
 
 from clouds.metar import parse_metar
+from clouds.constants import COVERAGE_FRACTION_BY_NAME
 
 LOGGER = logging.getLogger(__name__)
+GOES_READ_LOCK = Lock()
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 NOMADS_GFS_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
@@ -120,6 +123,8 @@ class GoesObservation:
     cloud_optical_thickness: float = MISSING_VALUE
     downloaded_path: Path | None = None
     timestamp: str = ""
+    total_cloud_cover: float = MISSING_VALUE
+    total_cloud_cover_grid: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -493,6 +498,8 @@ def _compose_observed_weather(
         "temp_250": MISSING_VALUE,
         "humidity_250": MISSING_VALUE,
         "cloud_cover_high": goes_observation.high_cloud_cover,
+        "cloud_cover_total": goes_observation.total_cloud_cover,
+        "total_cloud_cover_grid": list(goes_observation.total_cloud_cover_grid),
         "precipitation": metar_observation.precipitation,
         "surface_visibility": metar_observation.surface_visibility,
         "fog_presence": metar_observation.fog_presence,
@@ -517,8 +524,14 @@ def _compose_observed_weather(
 
     if not math.isfinite(weather["cloud_cover_high"]):
         weather["cloud_cover_high"] = metar_observation.high_cloud_cover
+    if not math.isfinite(weather["cloud_cover_total"]):
+        weather["cloud_cover_total"] = _extract_metar_total_cloud_cover(metar_observation.raw_record)
 
     if forecast_fallback is not None:
+        if not math.isfinite(weather["cloud_cover_total"]):
+            weather["cloud_cover_total"] = forecast_fallback.weather.get("cloud_cover_total", MISSING_VALUE)
+        if not _has_cloud_cover_grid(weather["total_cloud_cover_grid"]):
+            weather["total_cloud_cover_grid"] = forecast_fallback.weather.get("total_cloud_cover_grid", [])
         weather["temp_250"] = forecast_fallback.weather.get("temp_250", MISSING_VALUE)
         weather["humidity_250"] = forecast_fallback.weather.get("humidity_250", MISSING_VALUE)
         if not math.isfinite(weather["cloud_cover_high"]):
@@ -543,7 +556,7 @@ def _collect_observed_sources(
 ) -> tuple[SourceAttribution, ...]:
     sources: list[SourceAttribution] = []
 
-    if math.isfinite(goes_observation.high_cloud_cover):
+    if any(math.isfinite(value) for value in (goes_observation.high_cloud_cover, goes_observation.total_cloud_cover, goes_observation.cloud_optical_thickness)):
         sources.append(
             SourceAttribution(
                 name=_goes_source_label(goes_observation.bucket),
@@ -760,10 +773,12 @@ def _build_nomads_params(request_info: GfsRequest, lat: float, lon: float) -> di
         "lev_250_mb": "on",
         "lev_300_mb": "on",
         "lev_high_cloud_layer": "on",
+        "lev_entire_atmosphere": "on",
         "lev_surface": "on",
         "var_TMP": "on",
         "var_RH": "on",
         "var_HCDC": "on",
+        "var_TCDC": "on",
         "var_APCP": "on",
         "var_UGRD": "on",
         "var_VGRD": "on",
@@ -1254,6 +1269,16 @@ def _extract_metar_precipitation(record: dict[str, object]) -> float:
     return 1.0 if any(code in {"RA", "DZ"} for code in codes) else 0.0
 
 
+def _extract_metar_total_cloud_cover(record: dict[str, object]) -> float:
+    layers = parse_metar(record).layers
+    if layers:
+        return max(COVERAGE_FRACTION_BY_NAME[layer.coverage] for layer in layers)
+    body = str(record.get("rawOb", "")).split(" RMK", 1)[0].split()
+    if any(token in {"CLR", "SKC", "NSC", "NCD", "CAVOK"} for token in body) or record.get("clouds") == []:
+        return 0.0
+    return MISSING_VALUE
+
+
 def _extract_metar_surface_visibility(record: dict[str, object]) -> float:
     direct_value = _parse_metar_visibility(record.get("visib"))
     if math.isfinite(direct_value):
@@ -1340,6 +1365,11 @@ def _get_goes_observation(
         bucket, key = _find_latest_goes_object(now, lon)
         downloaded_path = _download_goes_object(bucket, key, effective_download_dir)
         high_cloud_cover, cloud_cover_grid = _extract_goes_cloud_cover_sample(downloaded_path, lat, lon)
+        total_cloud_cover, total_cloud_cover_grid = MISSING_VALUE, ()
+        try:
+            total_cloud_cover, total_cloud_cover_grid = _extract_goes_total_cloud_cover_sample(downloaded_path, lat, lon)
+        except (WeatherDataUnavailable, OSError, ValueError) as exc:
+            LOGGER.debug("Unable to load GOES total cloud fraction: %s", exc)
         cloud_optical_thickness = MISSING_VALUE
         try:
             cod_bucket, cod_key = _find_latest_goes_object(
@@ -1359,6 +1389,8 @@ def _get_goes_observation(
             cloud_optical_thickness=cloud_optical_thickness,
             downloaded_path=downloaded_path if download_dir is not None else None,
             timestamp=_extract_goes_timestamp(key),
+            total_cloud_cover=total_cloud_cover,
+            total_cloud_cover_grid=total_cloud_cover_grid,
         )
     finally:
         if temporary_download_dir is not None:
@@ -1435,7 +1467,7 @@ def _extract_goes_cloud_cover_sample(goes_path: Path, lat: float, lon: float) ->
     except ImportError as exc:  # pragma: no cover - environment-dependent
         raise WeatherDataUnavailable("GOES dependencies are not installed.") from exc
 
-    with Dataset(goes_path) as dataset:
+    with GOES_READ_LOCK, Dataset(goes_path) as dataset:
         y_slice, x_slice = _resolve_goes_window(dataset, lat, lon, np=np, Proj=Proj)
 
         layer_grids: list[object] = []
@@ -1475,6 +1507,29 @@ def _extract_goes_cloud_cover_sample(goes_path: Path, lat: float, lon: float) ->
     return MISSING_VALUE, ()
 
 
+def _extract_goes_total_cloud_cover_sample(goes_path: Path, lat: float, lon: float) -> tuple[float, tuple[float, ...]]:
+    try:
+        from netCDF4 import Dataset
+        import numpy as np
+        from pyproj import Proj
+    except ImportError as exc:  # pragma: no cover - optional dependencies
+        raise WeatherDataUnavailable("GOES dependencies are not installed.") from exc
+    with GOES_READ_LOCK, Dataset(goes_path) as dataset:
+        variable = dataset.variables.get("TCF")
+        if variable is None:
+            return MISSING_VALUE, ()
+        y_slice, x_slice = _resolve_goes_window(dataset, lat, lon, np=np, Proj=Proj)
+        values = variable[y_slice, x_slice]
+        if hasattr(values, "filled"):
+            values = values.filled(np.nan)
+        # netCDF auto-scaling returns TCF as a fraction, unlike the percentage CF1-CF5 layers.
+        grid = np.array(values, dtype=float)
+        valid = grid[np.isfinite(grid) & (grid >= 0.0) & (grid <= 1.0)]
+        if valid.size:
+            return float(valid.mean()), tuple(float(value) for value in valid.flatten())
+    return MISSING_VALUE, ()
+
+
 def _extract_goes_cloud_optical_thickness(goes_path: Path, lat: float, lon: float) -> float:
     try:
         from netCDF4 import Dataset
@@ -1483,7 +1538,7 @@ def _extract_goes_cloud_optical_thickness(goes_path: Path, lat: float, lon: floa
     except ImportError as exc:  # pragma: no cover - environment-dependent
         raise WeatherDataUnavailable("GOES dependencies are not installed.") from exc
 
-    with Dataset(goes_path) as dataset:
+    with GOES_READ_LOCK, Dataset(goes_path) as dataset:
         variable = dataset.variables.get(GOES_CLOUD_DEPTH_VARIABLE)
         if variable is None:
             return MISSING_VALUE
@@ -1601,6 +1656,7 @@ def _extract_weather_payload(records: Iterable[GribRecord], lat: float, lon: flo
         "temp_250": ("TMP", {"250 mb"}, _kelvin_to_celsius),
         "humidity_250": ("RH", {"250 mb"}, float),
         "cloud_cover_high": ("HCDC", {"high cloud layer"}, _percent_to_fraction),
+        "cloud_cover_total": ("TCDC", {"entire atmosphere", "entire atmosphere (considered as a single layer)"}, _percent_to_fraction),
         "precipitation": ("APCP", {"surface"}, float),
     }
 
@@ -1622,6 +1678,10 @@ def _extract_weather_payload(records: Iterable[GribRecord], lat: float, lon: flo
     ice_mixing_ratio_250 = _extract_nearest_value(records, lat, lon, "ICMR", {"250 mb"})
     ice_mixing_ratio_200 = _extract_nearest_value(records, lat, lon, "ICMR", {"200 mb"})
     weather["cloud_cover_grid"] = cloud_cover_grid
+    weather["total_cloud_cover_grid"] = _extract_neighborhood_values(
+        records, lat, lon, "TCDC", {"entire atmosphere", "entire atmosphere (considered as a single layer)"},
+        converter=_percent_to_fraction,
+    )
     weather["condensate_proxy"] = _estimate_gfs_cloud_optical_thickness(
         ice_mixing_ratio=ice_mixing_ratio_250,
         cloud_water_mixing_ratio=cloud_water_mixing_ratio,

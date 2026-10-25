@@ -28,6 +28,9 @@ Solar mode:
 - `crepuscular_rays`
 - `rainbow`
 - `fogbow`
+- `solar_corona`
+- `anticrepuscular_rays`
+- `secondary_rainbow`
 
 Lunar mode:
 
@@ -37,7 +40,7 @@ Lunar mode:
 - `lunar_corona`
 - `moonbow`
 
-The [additional-phenomena feasibility review](docs/new-phenomena-feasibility-2026-10-24.md) recommends solar corona as the first extension, with anticrepuscular rays and secondary rainbows as follow-on candidates. It documents required inputs, implementation work, and validation limits; these proposed IDs are not registered forecasts yet.
+Solar corona, anticrepuscular rays, and secondary rainbows are implemented, bringing the default combined output to 17 phenomena. The [implementation guide](docs/new-phenomena-implementation-2026-10-24.md) describes models, data inputs, and examples; the earlier [feasibility review](docs/new-phenomena-feasibility-2026-10-24.md) records the candidate assessment.
 
 ## Weather Modes
 
@@ -446,6 +449,7 @@ Forecast mode:
 Observed mode:
 
 - NOAA GOES cloud-layer products for cirrus and high-cloud conditions
+- GOES total cloud fraction (`TCF`) for directional cloud-shadow forecasts, with METAR total-coverage and GFS `TCDC` fallbacks
 - NOAA GOES cloud optical depth products when available
 - Aviation Weather Center METAR observations for precipitation and cloud layers
 - NOAA/NWS station discovery for locating nearby observing stations
@@ -634,6 +638,21 @@ Lunar reuse summary:
 
 `lunar_corona` requires a finite positive cloud optical-thickness input; clear or missing cloud evidence gives zero physical support. Its Gaussian preferences remain heuristic and do not measure particle-size distributions directly.
 
+New solar forecasts:
+
+- `solar_corona` shares the lunar model's diffraction core, uses solar visibility, and requires the Sun above the horizon. The lunar entry point and parameter imports remain supported.
+- `secondary_rainbow` shares the primary bow's precipitation and illumination terms but uses its own geometry, including partial-color support between 51 and 54 degrees. Its stronger visibility weight models a fainter bow's greater need for illumination/contrast, without imposing a fixed maximum score below the alert threshold.
+- `anticrepuscular_rays` evaluates sunward cloud/gap support separately from antisolar cloud clearance. It uses total cloud coverage, not just high cirrus. Both directional sample sets must be available; `--lightweight` therefore yields zero support for this phenomenon with an explanatory reason.
+
+These three entries include `current.viewing_azimuth` in degrees clockwise from north. Solar corona points toward the Sun; the bow and anticrepuscular rays point toward the opposite sky. Anticrepuscular-ray `spatial_context` also includes `source_cloud_fraction` and `antisolar_cloud_fraction` when available. The scores remain heuristic suitability estimates; particle-size uniformity, full-path scattering, and actual secondary-bow contrast are not measured directly.
+
+Select the new forecasts explicitly:
+
+```bash
+python3 cli/command.py --lat 32.847 --lon -96.806 --mode observed \
+  --illumination solar --phenomena solar_corona,anticrepuscular_rays,secondary_rainbow
+```
+
 ## Alert Integration
 
 The sibling alert project can invoke this predictor directly through the `atmospheric_optics` provider.
@@ -667,6 +686,9 @@ phenomena = [
   "crepuscular_rays",
   "rainbow",
   "fogbow",
+  "solar_corona",
+  "anticrepuscular_rays",
+  "secondary_rainbow",
   "lunar_halo",
   "paraselenae",
   "lunar_pillar",
